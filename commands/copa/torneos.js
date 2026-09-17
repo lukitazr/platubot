@@ -93,9 +93,11 @@ export default {
                 member: interaction.member,
                 reply: async (options) => {
                     if (interaction.deferred || interaction.replied) {
-                        return await interaction.followUp({ ...options, fetchReply: true });
+                        await interaction.followUp(options);
+                        return await interaction.fetchReply();
                     }
-                    return await interaction.reply({ ...options, fetchReply: true });
+                    await interaction.reply(options);
+                    return await interaction.fetchReply();
                 }
             };
 

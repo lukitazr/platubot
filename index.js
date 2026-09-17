@@ -1,8 +1,9 @@
-import { Client, GatewayIntentBits, Partials, Collection } from 'discord.js'
-import { readdirSync } from 'fs'
-import colors from 'colors'
+import './database/polyfill.js';
+import { Client, GatewayIntentBits, Partials, Collection } from 'discord.js';
+import { readdirSync } from 'fs';
+import colors from 'colors';
 
-colors.enable()
+colors.enable();
 
 const client = new Client({
   intents: [

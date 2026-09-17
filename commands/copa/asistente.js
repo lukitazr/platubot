@@ -1,9 +1,9 @@
-import { 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    EmbedBuilder, 
-    StringSelectMenuBuilder, 
+import {
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    EmbedBuilder,
+    StringSelectMenuBuilder,
     ChannelSelectMenuBuilder,
     ChannelType,
     ModalBuilder,
@@ -17,8 +17,7 @@ import {
 import Torneo from '../../models/copas/Torneo.js';
 import { generarPreviewTema, generarBracketCopa } from '../../utils/visual/copaVisualGenerator.js';
 import { extractPalette } from '../../utils/visual/colorExtractor.js';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
+import descargarImagen from '../../utils/descargarImagen.js';
 
 export default {
     name: 'copa-crear',
@@ -51,6 +50,7 @@ async function runWizard(client, context, isInteraction) {
         tipoEncuentro: 'unico', // 'unico', 'ida_vuelta', 'hibrido'
         tipoJugadores: 'users',
         tipoCompeticion: 'individual', // 'individual' | 'duo' | 'equipos'
+        caracter: 'amistoso', // 'oficial' | 'amistoso'
         logo: null,
         inscripcionAbierta: true,
         equipoConfig: {
@@ -67,7 +67,7 @@ async function runWizard(client, context, isInteraction) {
         }
     };
 
-    let msg = await context.reply({ 
+    let msg = await context.reply({
         embeds: [new EmbedBuilder().setTitle('🏆 Asistente de Creación de Torneos').setDescription('Bienvenido. Vamos a configurar tu nuevo torneo paso a paso.\n\nPresiona el botón para empezar.').setColor('Blue')],
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('start_wizard').setLabel('Empezar').setStyle(ButtonStyle.Primary))]
     });
@@ -114,7 +114,7 @@ async function runWizard(client, context, isInteraction) {
                     );
 
                     await i.showModal(modal);
-                    const submit = await i.awaitModalSubmit({ time: 60000 }).catch(() => null);
+                    const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
                     if (!submit) return;
 
                     const minJug = parseInt(submit.fields.getTextInputValue('min_jugadores'));
@@ -124,9 +124,17 @@ async function runWizard(client, context, isInteraction) {
                     }
 
                     config.equipoConfig = { minJugadores: minJug, maxJugadores: maxJug };
-                    
+
                     step = 4;
-                    await handleStep(submit);
+                    await submit.update({
+                        embeds: [buildEmbed(`Paso 4: Cantidad de Participantes`, `Has configurado los límites por equipo (${minJug} a ${maxJug} jugadores).\n\nHaz clic abajo para ingresar la cantidad de equipos participantes.`)],
+                        components: [new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('retry_step4')
+                                .setLabel('🔢 Ingresar Cantidad')
+                                .setStyle(ButtonStyle.Primary)
+                        )]
+                    });
                 } else {
                     step = 4;
                     await handleStep(i);
@@ -189,7 +197,7 @@ async function runWizard(client, context, isInteraction) {
                     );
 
                     await i.showModal(modal);
-                    const submit = await i.awaitModalSubmit({ time: 60000 }).catch(() => null);
+                    const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
                     if (!submit) return;
 
                     const cantGrupos = parseInt(submit.fields.getTextInputValue('cantidad_grupos'));
@@ -260,7 +268,7 @@ async function runWizard(client, context, isInteraction) {
                 modal.addLabelComponents(inputLabel);
 
                 await i.showModal(modal);
-                const submit = await i.awaitModalSubmit({ time: 60000 }).catch(() => null);
+                const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
                 if (!submit) return;
 
                 const attachmentField = submit.fields.getField("logo");
@@ -270,7 +278,7 @@ async function runWizard(client, context, isInteraction) {
                     const localPath = await descargarImagen(attachmentUrl, `${config.prefix}_logo`);
                     if (localPath) {
                         config.logo = localPath;
-                        
+
                         try {
                             const paleta = await extractPalette(localPath);
                             config.sugTema = paleta;
@@ -278,7 +286,7 @@ async function runWizard(client, context, isInteraction) {
                             await submit.editReply({
                                 embeds: [
                                     buildEmbed(
-                                        `Paso 9c: Paleta de Colores Sugerida`, 
+                                        `Paso 9c: Paleta de Colores Sugerida`,
                                         `Hemos extraído la siguiente paleta de colores de tu logo:\n\n` +
                                         `• **Primario (Fondo):** \`${paleta.primario}\`\n` +
                                         `• **Secundario (Cajas):** \`${paleta.secundario}\`\n` +
@@ -313,7 +321,6 @@ async function runWizard(client, context, isInteraction) {
                 step = 10;
                 await handleStep(i);
             } else if (i.customId === 'palette_apply_suggested') {
-                console.log("esto pasa")
                 if (config.sugTema) {
                     config.tema = { ...config.tema, ...config.sugTema };
                 }
@@ -324,6 +331,9 @@ async function runWizard(client, context, isInteraction) {
                 await handleStep(i);
             } else if (i.customId === 'edit_design') {
                 step = 9;
+                await handleStep(i);
+            } else if (i.customId === 'retry_step4') {
+                step = 4;
                 await handleStep(i);
             } else if (i.customId === 'confirm_torneo') {
                 await saveTorneo(i);
@@ -339,20 +349,20 @@ async function runWizard(client, context, isInteraction) {
             const modal = new ModalBuilder()
                 .setCustomId('modal_step1')
                 .setTitle('1. Nombre y Prefijo');
-            
+
             modal.addComponents(
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nombre').setLabel('Nombre del Torneo').setPlaceholder('Ej: Champions Platubi').setRequired(true).setStyle(TextInputStyle.Short)),
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prefix').setLabel('Prefijo para comandos').setPlaceholder('Ej: cl').setRequired(true).setMaxLength(5).setStyle(TextInputStyle.Short))
             );
 
             await i.showModal(modal);
-            const submit = await i.awaitModalSubmit({ time: 60000 }).catch(() => null);
+            const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
             if (!submit) return;
-            
+
             config.nombre = submit.fields.getTextInputValue('nombre');
             config.prefix = submit.fields.getTextInputValue('prefix').toLowerCase();
             step = 2;
-            
+
             await submit.update({
                 embeds: [buildEmbed(`Paso 2: Canal de Resultados`, `Selecciona el canal donde se reportarán los resultados y se verán las tablas.`)],
                 components: [new ActionRowBuilder().addComponents(
@@ -374,44 +384,77 @@ async function runWizard(client, context, isInteraction) {
                 )]
             });
         } else if (step === 4) {
+            let id = Math.random().toString(36).substring(2, 15);
             const modal = new ModalBuilder()
-                .setCustomId('modal_step4')
+                .setCustomId(`modal_step4_${id}`)
                 .setTitle('4. Participantes');
-            
+
             modal.addComponents(
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cant').setLabel('Cantidad de participantes').setPlaceholder('Ej: 16').setRequired(true).setStyle(TextInputStyle.Short))
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(`cant_${id}`).setLabel('Cantidad de participantes').setPlaceholder('Ej: 16').setMinLength(1).setMaxLength(3).setRequired(true).setStyle(TextInputStyle.Short))
             );
 
             await i.showModal(modal);
-            const submit = await i.awaitModalSubmit({ time: 60000 }).catch(() => null);
+            const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
             if (!submit) return;
 
-            const cant = parseInt(submit.fields.getTextInputValue('cant'));
-            if (isNaN(cant) || cant < 2) return submit.reply({ content: 'Cantidad inválida.', flags: 64 });
+            let cant = parseInt(submit.fields.getTextInputValue(`cant_${id}`));
+
+            let errMsg = null;
+            if (isNaN(cant)) {
+                errMsg = 'Debes ingresar un número entero válido.';
+            } else if (config.tipoCompeticion === 'individual' && cant < 2) {
+                errMsg = 'Cantidad inválida, el mínimo para formato Individual es 2 participantes.';
+            } else if (config.tipoCompeticion === 'duo' && cant < 4) {
+                errMsg = 'Cantidad inválida, el mínimo para formato Duo es 4 participantes (mínimo 2 parejas).';
+            } else if (config.tipoCompeticion === 'equipos' && cant < 2) {
+                errMsg = 'Cantidad inválida, el mínimo para formato Equipos es 2 equipos.';
+            }
+
+            if (errMsg) {
+                return submit.update({
+                    embeds: [buildEmbed(`⚠️ Paso 4: Cantidad de Participantes`, `❌ **${errMsg}**\n\nHaz clic en el botón de abajo para ingresar la cantidad nuevamente.`)],
+                    components: [new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('retry_step4')
+                            .setLabel('🔢 Reintentar Ingreso')
+                            .setStyle(ButtonStyle.Primary)
+                    )]
+                });
+            }
 
             config.cantidadParticipantes = cant;
             step = 5;
 
+            const options = [
+                { label: 'Eliminación Directa', value: 'directa', description: 'Todos a brackets' },
+                { label: 'Liga', value: 'liga', description: 'Todos contra todos' },
+            ];
+
+            if (cant > 3) {
+                options.unshift({ label: 'Champions League', value: 'champions', description: 'Liguilla -> Playoff -> Eliminatoria' })
+                options.unshift({ label: 'Eurocopa', value: 'euro', description: 'Grupos con mejores terceros' })
+                options.push({ label: 'Personalizado', value: 'personalizado', description: 'Configuración manual de grupos y fases' })
+            }
+
             await submit.update({
                 embeds: [buildEmbed(`Paso 5: Formato del Torneo`, `Selecciona el formato de competición:`)],
                 components: [new ActionRowBuilder().addComponents(
-                    new StringSelectMenuBuilder().setCustomId('select_format').setPlaceholder('Seleccionar formato...').addOptions([
-                        { label: 'Champions League', value: 'champions', description: 'Liguilla -> Playoff -> Eliminatoria' },
-                        { label: 'Eurocopa', value: 'euro', description: 'Grupos con mejores terceros' },
-                        { label: 'Eliminación Directa', value: 'directa', description: 'Todos a brackets' },
-                        { label: 'Personalizado', value: 'personalizado', description: 'Configuración manual de grupos y fases' }
-                    ])
+                    new StringSelectMenuBuilder().setCustomId('select_format').setPlaceholder('Seleccionar formato...').addOptions(options)
                 )]
             });
         } else if (step === 6) {
+            const options = [
+                { label: 'Partido Único', value: 'unico', description: 'Un solo enfrentamiento por ronda' },
+                { label: 'Ida y Vuelta', value: 'ida_vuelta', description: 'Dos partidos (con desempate si aplica)' },
+            ]
+
+            if (config.cantidadParticipantes > 3) {
+                options.push({ label: 'Grupos (1) y Eliminatoria (2)', value: 'hibrido', description: 'Grupos a partido único y brackets a ida y vuelta' });
+            }
             await i.update({
                 embeds: [buildEmbed(`Paso 6: Tipo de Encuentro`, `Selecciona cómo se jugarán los partidos:`)],
                 components: [new ActionRowBuilder().addComponents(
-                    new StringSelectMenuBuilder().setCustomId('select_match_type').setPlaceholder('Seleccionar tipo de encuentro...').addOptions([
-                        { label: 'Partido Único', value: 'unico', description: 'Un solo enfrentamiento por ronda' },
-                        { label: 'Ida y Vuelta', value: 'ida_vuelta', description: 'Dos partidos (con desempate si aplica)' },
-                        { label: 'Grupos (1) y Eliminatoria (2)', value: 'hibrido', description: 'Grupos a partido único y brackets a ida y vuelta' }
-                    ])
+                    new StringSelectMenuBuilder().setCustomId('select_match_type').setPlaceholder('Seleccionar tipo de encuentro...').addOptions(options)
                 )]
             });
         } else if (step === 7) {
@@ -426,6 +469,12 @@ async function runWizard(client, context, isInteraction) {
                 )]
             });
         } else if (step === 8) {
+            if (config.cantidadParticipantes < 4) {
+                config.hayTercerPuesto = false;
+                step = 9;
+                await handleStep(i);
+                return;
+            }
             await i.update({
                 embeds: [buildEmbed(`Paso 8: Tercer Puesto`, `¿Habrá partido por el tercer puesto?`)],
                 components: [new ActionRowBuilder().addComponents(
@@ -437,24 +486,32 @@ async function runWizard(client, context, isInteraction) {
             const modal = new ModalBuilder()
                 .setCustomId('modal_step9')
                 .setTitle('9. Personalización Visual');
-            
+
             modal.addComponents(
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pri').setLabel('Color Primario (Fondo)').setValue(config.tema.primario).setPlaceholder('#1a1a2e').setRequired(true).setStyle(TextInputStyle.Short)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('sec').setLabel('Color Secundario (Cajas)').setValue(config.tema.secundario).setPlaceholder('#16213e').setRequired(true).setStyle(TextInputStyle.Short)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('acc').setLabel('Color Acento (Destacados)').setValue(config.tema.acento).setPlaceholder('#e94560').setRequired(true).setStyle(TextInputStyle.Short)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('txt').setLabel('Color de Texto').setValue(config.tema.texto).setPlaceholder('#ffffff').setRequired(true).setStyle(TextInputStyle.Short)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('bor').setLabel('Color de Borde').setValue(config.tema.borde).setPlaceholder('#0f3460').setRequired(true).setStyle(TextInputStyle.Short))
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pri').setLabel('Color Primario (Fondo)').setPlaceholder('#1a1a2e').setRequired(false).setStyle(TextInputStyle.Short)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('sec').setLabel('Color Secundario (Cajas)').setPlaceholder('#16213e').setRequired(false).setStyle(TextInputStyle.Short)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('acc').setLabel('Color Acento (Destacados)').setPlaceholder('#e94560').setRequired(false).setStyle(TextInputStyle.Short)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('txt').setLabel('Color de Texto').setPlaceholder('#ffffff').setRequired(false).setStyle(TextInputStyle.Short)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('bor').setLabel('Color de Borde').setPlaceholder('#0f3460').setRequired(false).setStyle(TextInputStyle.Short))
             );
 
             await i.showModal(modal);
-            const submit = await i.awaitModalSubmit({ time: 120000 }).catch(() => null);
+            const submit = await i.awaitModalSubmit({ time: 600000 }).catch(() => null);
             if (!submit) return;
 
-            config.tema.primario = submit.fields.getTextInputValue('pri');
-            config.tema.secundario = submit.fields.getTextInputValue('sec');
-            config.tema.acento = submit.fields.getTextInputValue('acc');
-            config.tema.texto = submit.fields.getTextInputValue('txt');
-            config.tema.borde = submit.fields.getTextInputValue('bor');
+            const sanitizeHex = (val, fallback) => {
+                if (!val || typeof val !== 'string') return fallback;
+                const matches = val.match(/#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}/g);
+                if (matches && matches.length > 0) return matches[0];
+                if (/^[0-9a-fA-F]{6}$/.test(val.trim())) return `#${val.trim()}`;
+                return fallback;
+            };
+
+            config.tema.primario = sanitizeHex(submit.fields.getTextInputValue('pri'), '#1a1a2e');
+            config.tema.secundario = sanitizeHex(submit.fields.getTextInputValue('sec'), '#16213e');
+            config.tema.acento = sanitizeHex(submit.fields.getTextInputValue('acc'), '#e94560');
+            config.tema.texto = sanitizeHex(submit.fields.getTextInputValue('txt'), '#ffffff');
+            config.tema.borde = sanitizeHex(submit.fields.getTextInputValue('bor'), '#0f3460');
 
             await submit.update({
                 embeds: [buildEmbed(`Paso 9b: Logo del Torneo (Opcional)`, `¿Deseas agregar un logo para el torneo?\n\nEste logo se colocará como thumbnail en los embeds y reemplazará al emoji de copa en las imágenes del fixture/bracket.`)],
@@ -492,7 +549,7 @@ async function runWizard(client, context, isInteraction) {
                 .setDescription(`Revisa los datos y el diseño antes de crear el torneo:\n\n${resumen}`)
                 .setColor('Gold')
                 .setImage('attachment://tabla.png');
-            
+
             const embedBrackets = new EmbedBuilder()
                 .setTitle('📊 Preview de Brackets')
                 .setImage('attachment://brackets.png')
@@ -516,7 +573,7 @@ async function runWizard(client, context, isInteraction) {
 
     async function saveTorneo(i) {
         await i.deferUpdate();
-        
+
         if (config.formatoPreset === 'champions') {
             const total = config.cantidadParticipantes;
             config.championsConfig = {
@@ -531,6 +588,10 @@ async function runWizard(client, context, isInteraction) {
             config.mejorTercero = true;
             config.cantidadGrupos = Math.ceil(config.cantidadParticipantes / 4);
             config.jugadoresPorGrupo = 4;
+        } else if (config.formatoPreset === 'liga') {
+            config.gruposHabilitados = false;
+            config.playoffsHabilitados = false;
+            config.cantidadGrupos = 0;
         } else if (config.tipoEncuentro === 'hibrido') {
             config.gruposHabilitados = true;
             config.cantidadGrupos = Math.ceil(config.cantidadParticipantes / 4);
@@ -551,23 +612,5 @@ async function runWizard(client, context, isInteraction) {
             components: [],
             files: []
         });
-    }
-}
-
-async function descargarImagen(url, filename) {
-    try {
-        const response = await fetch(url);
-        if (!response.ok) return null;
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const extension = url.split('.').pop().split('?')[0] || 'png';
-        const dir = join(process.cwd(), 'assets', 'logos');
-        await mkdir(dir, { recursive: true });
-        const filePath = join(dir, `${filename}.${extension}`);
-        await writeFile(filePath, buffer);
-        return filePath; 
-    } catch (e) {
-        console.error('Error al descargar imagen:', e);
-        return null;
     }
 }

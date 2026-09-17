@@ -1,81 +1,155 @@
-import { existsSync, mkdirSync } from 'fs';
-import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import './polyfill.js';
+import mongoose from 'mongoose';
 import crypto from 'crypto';
+import { connectDB } from './connection.js';
 
 export const jsonModelEvents = {
   onWrite: null
 };
 
-const DATA_DIR = join(process.cwd(), 'data');
-
-if (!existsSync(DATA_DIR)) {
-  mkdirSync(DATA_DIR, { recursive: true });
-}
-
-class JsonDocument {
+class MongoDocument {
   constructor(modelInfo, data) {
     this._modelInfo = modelInfo;
     Object.assign(this, data);
   }
 
+  _getId() {
+    return this._id || this.id;
+  }
+
   async save() {
     return this._modelInfo.updateDocument(this);
+  }
+
+  async update(updateData) {
+    Object.assign(this, updateData);
+    return this.save();
+  }
+
+  async delete() {
+    const id = this._getId();
+    if (!id) throw new Error('Cannot delete document without an _id or id property.');
+    return this._modelInfo.deleteById(id);
+  }
+
+  toJSON() {
+    const copy = { ...this };
+    delete copy._modelInfo;
+    return copy;
   }
 }
 
 export default class JsonModel {
-  constructor(collectionName, schemaDefaults = {}) {
+  constructor(collectionName, schemaDefaults = {}, options = {}) {
     this.collectionName = collectionName;
     this.schemaDefaults = schemaDefaults;
-    this.filePath = join(DATA_DIR, `${collectionName}.json`);
+    this.discriminatorKey = options.discriminatorKey || null;
+    this.discriminators = options.discriminators || {};
 
-    // Ensure file exists synchronously on init to avoid race conditions during boot
-    import('fs').then(fs => {
-      if (!fs.existsSync(this.filePath)) {
-        fs.writeFileSync(this.filePath, JSON.stringify([]), 'utf8');
-      }
-    });
+    const schema = new mongoose.Schema(
+      { _id: { type: mongoose.Schema.Types.Mixed } },
+      { strict: false, versionKey: false, collection: collectionName }
+    );
+
+    this.mongooseModel = mongoose.models[collectionName] || mongoose.model(collectionName, schema);
   }
 
-  async _read() {
-    try {
-      const data = await readFile(this.filePath, 'utf8');
-      const parsed = JSON.parse(data);
-      return this._normalizeData(parsed);
-    } catch (error) {
-      if (error.code === 'ENOENT') return [];
-      console.error(`Error reading ${this.collectionName}:`, error);
-      return [];
+  async _ensureConnected() {
+    await connectDB();
+  }
+
+  _wrap(doc) {
+    if (!doc) return null;
+    const plainObj = doc.toObject ? doc.toObject() : { ...doc };
+    delete plainObj._modelInfo;
+    return new MongoDocument(this, plainObj);
+  }
+
+  _applyDefaults(data) {
+    let defaults = this.schemaDefaults;
+
+    if (typeof defaults === 'function') {
+      defaults = defaults(data);
     }
-  }
 
-  _normalizeData(data) {
-    if (Array.isArray(data)) {
-      return data.map(item => this._normalizeData(item));
-    } else if (data !== null && typeof data === 'object') {
-      // MongoDB special types
-      if (data.$oid) return data.$oid;
-      if (data.$date) {
-          // Si es un objeto de fecha de MongoDB { $date: "..." } o { $date: { $numberLong: "..." } }
-          if (typeof data.$date === 'string') return data.$date;
-          if (data.$date.$numberLong) return new Date(parseInt(data.$date.$numberLong)).toISOString();
-          return data.$date;
-      }
-      if (data.$numberInt !== undefined) return parseInt(data.$numberInt);
-      if (data.$numberLong !== undefined) return parseInt(data.$numberLong);
+    const defaultedData = { ...defaults, ...data };
+    const fieldsToExclude = new Set();
 
-      const normalized = {};
-      for (const key in data) {
-        normalized[key] = this._normalizeData(data[key]);
+    const discKeys = Array.isArray(this.discriminatorKey)
+      ? this.discriminatorKey
+      : (this.discriminatorKey ? [this.discriminatorKey] : []);
+
+    for (const key of discKeys) {
+      const val = data && data[key];
+      const discMap = this.discriminators[key] || this.discriminators;
+      const subDefaults = discMap && discMap[val];
+
+      if (subDefaults) {
+        const resolved = typeof subDefaults === 'function' ? subDefaults(data) : subDefaults;
+
+        for (const k in resolved) {
+          if (k === '_excludeFields') {
+            if (Array.isArray(resolved._excludeFields)) {
+              resolved._excludeFields.forEach(f => fieldsToExclude.add(f));
+            }
+          } else {
+            defaultedData[k] = resolved[k];
+          }
+        }
       }
-      return normalized;
     }
-    return data;
+
+    for (const key in defaults) {
+      if (
+        key !== '_excludeFields' &&
+        typeof defaults[key] === 'object' &&
+        defaults[key] !== null &&
+        !Array.isArray(defaults[key]) &&
+        defaultedData[key] !== undefined &&
+        !fieldsToExclude.has(key)
+      ) {
+        defaultedData[key] = { ...defaults[key], ...(data[key] || {}) };
+      }
+    }
+
+    for (const field of fieldsToExclude) {
+      delete defaultedData[field];
+    }
+
+    delete defaultedData._excludeFields;
+    return defaultedData;
   }
 
-  async _write(data) {
-    await writeFile(this.filePath, JSON.stringify(data, null, 2), 'utf8');
+  _buildIdQuery(id) {
+    if (!id) return { _id: null };
+    if (typeof id === 'object' && !Array.isArray(id)) {
+      return id;
+    }
+    const idStr = String(id);
+    const idNum = !isNaN(id) ? Number(id) : null;
+
+    const conditions = [{ _id: id }, { _id: idStr }, { id: idStr }];
+    if (idNum !== null) {
+      conditions.push({ _id: idNum });
+      conditions.push({ id: idNum });
+    }
+
+    return { $or: conditions };
+  }
+
+  async updateDocument(docInstance) {
+    await this._ensureConnected();
+    const rawData = { ...docInstance };
+    delete rawData._modelInfo;
+
+    const targetId = rawData._id || rawData.id;
+    if (!targetId) {
+      throw new Error(`Cannot update document in collection ${this.collectionName} without _id or id.`);
+    }
+
+    const filter = this._buildIdQuery(targetId);
+    await this.mongooseModel.updateOne(filter, { $set: rawData }, { upsert: true });
+
     if (jsonModelEvents.onWrite) {
       try {
         jsonModelEvents.onWrite(this.collectionName);
@@ -83,183 +157,90 @@ export default class JsonModel {
         console.error('Error in jsonModelEvents.onWrite:', err);
       }
     }
-  }
-
-  _wrap(doc) {
-    if (!doc) return null;
-    return new JsonDocument(this, doc);
-  }
-
-  _applyDefaults(data) {
-    const defaultedData = { ...this.schemaDefaults, ...data };
-    
-    for (const key in this.schemaDefaults) {
-      if (typeof this.schemaDefaults[key] === 'object' && this.schemaDefaults[key] !== null && !Array.isArray(this.schemaDefaults[key])) {
-        defaultedData[key] = { ...this.schemaDefaults[key], ...(data[key] || {}) };
-      }
-    }
-    return defaultedData;
-  }
-
-  _compareIds(id1, id2) {
-    const normalize = (id) => {
-      if (typeof id === 'string') return id;
-      if (id && typeof id === 'object') {
-        if (id.$oid) return id.$oid;
-        return JSON.stringify(id);
-      }
-      return id;
-    };
-    return normalize(id1) === normalize(id2);
-  }
-
-  async updateDocument(docInstance) {
-    const data = await this._read();
-    const index = data.findIndex(d => this._compareIds(d._id, docInstance._id));
-    const rawData = { ...docInstance };
-    delete rawData._modelInfo; 
-
-    if (index !== -1) {
-      data[index] = rawData;
-    } else {
-      data.push(rawData);
-    }
-    await this._write(data);
-    return docInstance;
+    return this._wrap(rawData);
   }
 
   async create(data) {
-    const records = await this._read();
-    
+    await this._ensureConnected();
+
     if (Array.isArray(data)) {
-       const mapped = data.map(item => {
-           const withDefaults = this._applyDefaults(item);
-           if (!withDefaults._id) withDefaults._id = crypto.randomUUID();
-           return withDefaults;
-       });
-       records.push(...mapped);
-       await this._write(records);
-       return mapped.map(item => this._wrap(item));
+      const mapped = data.map(item => {
+        const withDefaults = this._applyDefaults(item);
+        if (!withDefaults._id) withDefaults._id = withDefaults.id || crypto.randomUUID();
+        return withDefaults;
+      });
+      const createdDocs = await this.mongooseModel.insertMany(mapped);
+      return createdDocs.map(d => this._wrap(d));
     }
 
     const newData = this._applyDefaults(data);
     if (!newData._id) {
-      newData._id = crypto.randomUUID();
-    }
-    
-    records.push(newData);
-    await this._write(records);
-    return this._wrap(newData);
-  }
-
-  _getNestedValue(obj, path) {
-    return path.split('.').reduce((acc, part) => acc && acc[part], obj);
-  }
-
-  _match(record, query) {
-    if (query.$or && Array.isArray(query.$or)) {
-      return query.$or.some(subQuery => this._match(record, subQuery));
+      newData._id = newData.id || crypto.randomUUID();
     }
 
-    return Object.keys(query).every(key => {
-      const queryVal = query[key];
-      
-      // Handle _id comparison specially
-      if (key === '_id') return this._compareIds(record._id, queryVal);
-
-      // Simple case: no dot notation and not an array search
-      if (!key.includes('.') && record[key] === queryVal) return true;
-
-      // Handle dot notation and array search
-      const parts = key.split('.');
-      let current = [record];
-      
-      for (const part of parts) {
-        let next = [];
-        for (const item of current) {
-          if (item && typeof item === 'object') {
-            const val = item[part];
-            if (Array.isArray(val)) {
-              next.push(...val);
-            } else if (val !== undefined) {
-              next.push(val);
-            }
-          }
-        }
-        current = next;
-        if (current.length === 0) break;
-      }
-      
-      return current.some(v => v === queryVal);
-    });
+    const created = await this.mongooseModel.create(newData);
+    return this._wrap(created);
   }
 
   async find(query = {}) {
-    const records = await this._read();
-    const results = records.filter(record => this._match(record, query));
-    return results.map(res => this._wrap(res));
+    await this._ensureConnected();
+    const docs = await this.mongooseModel.find(query).lean();
+    return docs.map(d => this._wrap(d));
   }
 
   async findOne(query = {}) {
-    const records = await this._read();
-    const result = records.find(record => this._match(record, query));
-    return this._wrap(result);
+    await this._ensureConnected();
+    const doc = await this.mongooseModel.findOne(query).lean();
+    return this._wrap(doc);
+  }
+
+  async findById(id) {
+    return this.findOne(this._buildIdQuery(id));
+  }
+
+  async updateById(id, updateData) {
+    await this._ensureConnected();
+    const filter = this._buildIdQuery(id);
+    const doc = await this.mongooseModel.findOneAndUpdate(
+      filter,
+      { $set: updateData },
+      { returnDocument: 'after', upsert: false }
+    ).lean();
+    return this._wrap(doc);
+  }
+
+  async upsertById(id, data) {
+    await this._ensureConnected();
+    const existing = await this.findById(id);
+    if (existing) {
+      return this.updateById(id, data);
+    } else {
+      const recordData = { ...data };
+      if (!recordData._id) recordData._id = id;
+      if (!recordData.id) recordData.id = id;
+      return this.create(recordData);
+    }
+  }
+
+  async deleteById(id) {
+    await this._ensureConnected();
+    const filter = this._buildIdQuery(id);
+    const res = await this.mongooseModel.deleteOne(filter);
+    return { deletedCount: res.deletedCount };
   }
 
   async update(query, update, options = {}) {
-    const records = await this._read();
-    let count = 0;
-    const results = [];
-
-    for (let i = 0; i < records.length; i++) {
-      if (this._match(records[i], query)) {
-        this._applyUpdate(records[i], update);
-        results.push(this._wrap(records[i]));
-        count++;
-        if (!options.multi && count === 1) break;
-      }
-    }
-
-    if (count > 0) {
-      await this._write(records);
-    } else if (options.upsert) {
-      const newDoc = await this.create({ ...query, ...(update.$set || update) });
-      return newDoc;
-    }
-
-    return options.multi ? { n: count, ok: 1 } : results[0];
-  }
-
-  _applyUpdate(record, update) {
-    if (update.$set) {
-      Object.assign(record, update.$set);
-    }
-    if (update.$inc) {
-      for (const key in update.$inc) {
-        record[key] = (record[key] || 0) + update.$inc[key];
-      }
-    }
-    if (update.$push) {
-      for (const key in update.$push) {
-        if (!record[key]) record[key] = [];
-        record[key].push(update.$push[key]);
-      }
-    }
-    if (update.$pull) {
-       for (const key in update.$pull) {
-           if (Array.isArray(record[key])) {
-               const query = update.$pull[key];
-               record[key] = record[key].filter(item => {
-                   if (typeof query === 'object') {
-                       return !Object.keys(query).every(k => item[k] === query[k]);
-                   }
-                   return item !== query;
-               });
-           }
-       }
-    }
-    if (!update.$set && !update.$inc && !update.$push && !update.$pull) {
-      Object.assign(record, update);
+    await this._ensureConnected();
+    if (options.multi) {
+      const res = await this.mongooseModel.updateMany(query, update, options);
+      return { n: res.modifiedCount || res.matchedCount, ok: 1 };
+    } else {
+      const doc = await this.mongooseModel.findOneAndUpdate(query, update, {
+        returnDocument: 'after',
+        upsert: options.upsert,
+        ...options
+      }).lean();
+      return this._wrap(doc);
     }
   }
 
@@ -268,26 +249,14 @@ export default class JsonModel {
   }
 
   async deleteOne(query) {
-    const records = await this._read();
-    const index = records.findIndex(record => this._match(record, query));
-
-    if (index !== -1) {
-      records.splice(index, 1);
-      await this._write(records);
-      return { deletedCount: 1 };
-    }
-    return { deletedCount: 0 };
+    await this._ensureConnected();
+    const res = await this.mongooseModel.deleteOne(query);
+    return { deletedCount: res.deletedCount };
   }
 
   async deleteMany(query) {
-    const records = await this._read();
-    const initialLength = records.length;
-    const filtered = records.filter(record => !this._match(record, query));
-    
-    if (filtered.length !== initialLength) {
-      await this._write(filtered);
-      return { deletedCount: initialLength - filtered.length };
-    }
-    return { deletedCount: 0 };
+    await this._ensureConnected();
+    const res = await this.mongooseModel.deleteMany(query);
+    return { deletedCount: res.deletedCount };
   }
 }

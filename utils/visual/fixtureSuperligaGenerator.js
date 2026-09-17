@@ -1,6 +1,7 @@
 import { renderToBuffer } from './renderPool.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { resolvePlayers } from '../db/userResolver.js';
 
 function getShieldB64(escudoPath) {
     if (!escudoPath) return null;
@@ -14,38 +15,23 @@ function getShieldB64(escudoPath) {
     return null;
 }
 
-async function fetchAvatars(partidos, client) {
-  const avatars = new Map();
-  if (!client) return avatars;
-
+async function fetchPlayerMap(partidos, client) {
   const playerIds = new Set();
   partidos.forEach(p => {
     const duelos = p.duelosIndividuales || p.miniPartidos || [];
     duelos.forEach(d => {
-      const idL = d.jugadorLocalId || d.localJugadorId;
-      const idV = d.jugadorVisitanteId || d.visitanteJugadorId;
-      if (idL && idL !== 'BYE') playerIds.add(idL);
-      if (idV && idV !== 'BYE') playerIds.add(idV);
+      const idL = d.jugadorLocalId || d.localJugadorId || d.localJugador;
+      const idV = d.jugadorVisitanteId || d.visitanteJugadorId || d.visitanteJugador;
+      if (idL && idL !== 'BYE') playerIds.add(String(idL));
+      if (idV && idV !== 'BYE') playerIds.add(String(idV));
     });
   });
 
-  const promises = Array.from(playerIds).map(async (id) => {
-    if (!id || !/^\d{17,20}$/.test(id)) return;
-    try {
-      const user = await client.users.fetch(id);
-      const url = user.displayAvatarURL({ extension: 'png', size: 128 });
-      avatars.set(id, url);
-    } catch {
-      avatars.set(id, null);
-    }
-  });
-
-  await Promise.all(promises);
-  return avatars;
+  return await resolvePlayers(playerIds, client);
 }
 
 export async function generarFixtureSuperligaImagen(partidos, numeroFecha, temporada, equiposDB, client = null) {
-  const avatars = await fetchAvatars(partidos, client);
+  const playerMap = await fetchPlayerMap(partidos, client);
 
   const THEME = {
     bg: '#0a0e14',
@@ -61,17 +47,28 @@ export async function generarFixtureSuperligaImagen(partidos, numeroFecha, tempo
   const width = 1000;
   const matchCardHeight = 320; 
   const headerHeight = 220;
-  const totalHeight = headerHeight + (partidos.length * (matchCardHeight + 30)) + 60;
+  const hasMultipleFechas = partidos.some(p => p.fechaLabel || p.fechaNumero);
+  const cardExtra = hasMultipleFechas ? 40 : 0;
+  const totalHeight = headerHeight + (partidos.length * (matchCardHeight + cardExtra + 30)) + 60;
 
   const getJugadorNombre = (id) => {
     if (!id || id === 'BYE') return 'TBD';
-    for (const eq of equiposDB) {
-        if (eq.coach.id === id) return eq.coach.nombre;
-        const jug = eq.jugadores.find(j => j.id === id);
-        if (jug) return jug.nombre;
+    const idStr = String(id);
+    const pResolved = playerMap.get(idStr);
+    if (pResolved?.nombre) return pResolved.nombre;
+    for (const eq of (equiposDB || [])) {
+        if (eq.coach && (String(eq.coach.id) === idStr || String(eq.coach.discordId) === idStr)) return eq.coach.nombre;
+        const jug = eq.jugadores?.find(j => String(typeof j === 'string' ? j : j.id) === idStr);
+        if (jug) return typeof jug === 'string' ? `Jugador (${idStr.slice(-4)})` : jug.nombre;
     }
-    return 'Desconocido';
+    return `Jugador (${idStr.slice(-4)})`;
   };
+
+  const mainTitle = typeof numeroFecha === 'number'
+    ? `JORNADA ${numeroFecha}`
+    : (String(numeroFecha).toUpperCase().startsWith('FECHA') || String(numeroFecha).toUpperCase().startsWith('JORNADA')
+      ? String(numeroFecha).toUpperCase()
+      : `JORNADA ${numeroFecha}`);
 
   const element = {
     type: 'div',
@@ -92,7 +89,7 @@ export async function generarFixtureSuperligaImagen(partidos, numeroFecha, tempo
           props: {
             style: { display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '50px' },
             children: [
-                { type: 'span', props: { style: { fontSize: '84px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '-3px', lineHeight: 1 }, children: `JORNADA ${numeroFecha}` } },
+                { type: 'span', props: { style: { fontSize: '72px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '-2px', lineHeight: 1, textAlign: 'center' }, children: mainTitle } },
                 { type: 'div', props: { style: { width: '400px', height: '6px', backgroundColor: THEME.oceanic, marginTop: '10px', boxShadow: `0 0 20px ${THEME.oceanic}` } } },
                 { type: 'span', props: { style: { fontSize: '20px', color: THEME.textMuted, marginTop: '15px', fontWeight: 600 }, children: temporada.toUpperCase() } }
             ]
@@ -109,6 +106,48 @@ export async function generarFixtureSuperligaImagen(partidos, numeroFecha, tempo
             const setsV = p.puntosMiniVisitante ?? p.resultado?.golesVisitante ?? 0;
             const duelos = p.duelosIndividuales || p.miniPartidos || [];
             
+            const fechaBadge = (p.fechaLabel || p.fechaNumero) ? {
+                type: 'div',
+                props: {
+                    style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        borderBottom: '1px solid rgba(255,255,255,0.08)',
+                        paddingBottom: '8px',
+                        marginBottom: '14px',
+                        width: '100%'
+                    },
+                    children: [
+                        {
+                            type: 'span',
+                            props: {
+                                style: {
+                                    fontSize: '14px',
+                                    fontWeight: 900,
+                                    color: THEME.oceanic,
+                                    letterSpacing: '2px',
+                                    textTransform: 'uppercase'
+                                },
+                                children: p.fechaLabel ? p.fechaLabel.toUpperCase() : `JORNADA ${p.fechaNumero}`
+                            }
+                        },
+                        p.tipo ? {
+                            type: 'span',
+                            props: {
+                                style: {
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                    color: THEME.textMuted,
+                                    textTransform: 'uppercase'
+                                },
+                                children: p.tipo
+                            }
+                        } : null
+                    ].filter(Boolean)
+                }
+            } : null;
+
             return {
                 type: 'div',
                 props: {
@@ -123,6 +162,7 @@ export async function generarFixtureSuperligaImagen(partidos, numeroFecha, tempo
                         border: `1px solid ${THEME.border}`,
                     },
                     children: [
+                        fechaBadge,
                         {
                             type: 'div',
                             props: {
@@ -183,10 +223,10 @@ export async function generarFixtureSuperligaImagen(partidos, numeroFecha, tempo
                                 },
                                 children: [0, 1, 2].map((idx) => {
                                     const duelo = duelos[idx];
-                                    const idL = duelo?.jugadorLocalId || duelo?.localJugadorId;
-                                    const idV = duelo?.jugadorVisitanteId || duelo?.visitanteJugadorId;
-                                    const avL = avatars.get(idL);
-                                    const avV = avatars.get(idV);
+                                    const idL = duelo?.jugadorLocalId || duelo?.localJugadorId || duelo?.localJugador;
+                                    const idV = duelo?.jugadorVisitanteId || duelo?.visitanteJugadorId || duelo?.visitanteJugador;
+                                    const avL = playerMap.get(String(idL))?.avatar;
+                                    const avV = playerMap.get(String(idV))?.avatar;
                                     const nombreL = getJugadorNombre(idL);
                                     const nombreV = getJugadorNombre(idV);
                                     const gl = duelo?.golesLocal;

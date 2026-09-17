@@ -12,12 +12,12 @@ export default async function handleCanal(interaction, liga, div) {
     .setPlaceholder('Selecciona el nuevo canal de resultados...')
     .addChannelTypes(ChannelType.GuildText);
 
-  const resp = await interaction.reply({
+  await interaction.reply({
     content: `📺 **Cambiar Canal — ${div.toUpperCase()}**\nSelecciona el canal donde se enviarán las actualizaciones:`,
     components: [new ActionRowBuilder().addComponents(select)],
-    flags: 64,
-    fetchReply: true
+    flags: 64
   });
+  const resp = await interaction.fetchReply();
 
   const sel = await resp.awaitMessageComponent({ filter: i => i.user.id === interaction.user.id, time: 60000 }).catch(() => null);
   if (!sel) return;

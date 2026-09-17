@@ -2,11 +2,12 @@ import { AttachmentBuilder, SlashCommandBuilder, ActionRowBuilder } from 'discor
 import Segunda from '../../models/Segunda.js';
 import { generarFixtureImagen } from '../../utils/visual/fixtureGenerator.js';
 import { buildFixtureNavigation } from '../../utils/ui/fixtureNavigation.js';
+import { resolveFilterTarget, sendFilteredLeagueFixture } from '../../utils/fixtureFilter.js';
 
 export default {
   name: 'palubi-fixture',
   aliases: ['palubif', 'fixturepalubi', 'fixturepa'],
-  desc: 'Muestra el fixture de la Palubi. Uso: !palubi-fixture [fecha]',
+  desc: 'Muestra el fixture de la Palubi. Uso: !palubi-fixture [fecha/jugador]',
   permisos: [],
 
   data: new SlashCommandBuilder()
@@ -15,6 +16,10 @@ export default {
     .addIntegerOption(option =>
       option.setName('fecha')
         .setDescription('Número de la fecha a mostrar')
+        .setRequired(false))
+    .addStringOption(option =>
+      option.setName('jugador')
+        .setDescription('Filtrar partidos por tag/ID/nombre de jugador')
         .setRequired(false)),
 
   execute: async (client, interaction) => {
@@ -23,6 +28,15 @@ export default {
     if (!liga) return interaction.editReply('❌ No hay ninguna temporada registrada.');
     
     const fechaNum = interaction.options.getInteger('fecha');
+    const jugadorOption = interaction.options.getString('jugador');
+
+    if (jugadorOption) {
+      const filterTarget = await resolveFilterTarget(jugadorOption, client);
+      if (filterTarget) {
+        return await sendFilteredLeagueFixture({ client, context: interaction, liga, filterTarget, div: 'segunda' });
+      }
+    }
+
     await sendFixture(client, interaction, liga, fechaNum, 'segunda');
   },
 
@@ -30,7 +44,27 @@ export default {
     const liga = await getLatestLiga();
     if (!liga) return message.reply('❌ No hay ninguna temporada registrada.');
     
-    const fechaNum = args[0] ? parseInt(args[0]) : null;
+    let fechaNum = null;
+    let filterTarget = null;
+
+    if (args && args.length > 0) {
+      const mentionOrId = args.find(a => /^<@!?\d{17,20}>$/.test(a) || /^\d{17,20}$/.test(a));
+      if (mentionOrId) {
+        filterTarget = await resolveFilterTarget(mentionOrId, client);
+      } else {
+        const numArg = parseInt(args[0]);
+        if (!isNaN(numArg)) {
+          fechaNum = numArg;
+        } else {
+          filterTarget = await resolveFilterTarget(args.join(' '), client);
+        }
+      }
+    }
+
+    if (filterTarget) {
+      return await sendFilteredLeagueFixture({ client, context: message, liga, filterTarget, div: 'segunda' });
+    }
+
     await sendFixture(client, message, liga, fechaNum, 'segunda');
   },
 };

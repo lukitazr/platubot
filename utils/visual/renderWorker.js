@@ -92,6 +92,96 @@ async function loadEmoji(codepoints) {
     return undefined;
 }
 
+// ── Manejo robusto de imágenes para Satori ────────────────────────────────────
+const TRANSPARENT_1X1_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const imgCache = new Map();
+
+async function resolveImageUrl(src) {
+    if (!src || typeof src !== 'string') return TRANSPARENT_1X1_PNG;
+    
+    // Si ya es un data URI base64 válido
+    if (src.startsWith('data:image/')) {
+        return src;
+    }
+
+    if (imgCache.has(src)) {
+        return imgCache.get(src);
+    }
+
+    // Ruta de archivo local en disco
+    if (!src.startsWith('http://') && !src.startsWith('https://')) {
+        try {
+            const localPath = join(CWD, src);
+            const targetPath = existsSync(localPath) ? localPath : (existsSync(src) ? src : null);
+            if (targetPath) {
+                const buffer = readFileSync(targetPath);
+                if (buffer.length > 50) {
+                    const ext = targetPath.split('.').pop() || 'png';
+                    const dataUri = `data:image/${ext};base64,${buffer.toString('base64')}`;
+                    imgCache.set(src, dataUri);
+                    return dataUri;
+                }
+            }
+        } catch (e) {}
+        return TRANSPARENT_1X1_PNG;
+    }
+
+    // URL remota (Discord CDN, etc.)
+    try {
+        const res = await fetch(src, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+            },
+            signal: AbortSignal.timeout(4000)
+        });
+
+        if (res.ok) {
+            const contentType = res.headers.get('content-type') || '';
+            if (contentType.includes('image') || contentType.includes('octet-stream')) {
+                const buffer = Buffer.from(await res.arrayBuffer());
+                if (buffer.length > 50 && !buffer.toString('utf8', 0, 10).startsWith('{')) {
+                    const mime = contentType.includes('image') ? contentType.split(';')[0] : 'image/png';
+                    const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
+                    imgCache.set(src, dataUri);
+                    return dataUri;
+                }
+            }
+        }
+    } catch (e) {}
+
+    // Fallback si la imagen no existe (404), expiró o da error
+    imgCache.set(src, TRANSPARENT_1X1_PNG);
+    return TRANSPARENT_1X1_PNG;
+}
+
+async function sanitizeVdom(node) {
+    if (!node || typeof node !== 'object') return node;
+
+    if (Array.isArray(node)) {
+        await Promise.all(node.map(child => sanitizeVdom(child)));
+        return node;
+    }
+
+    if (node.type === 'img' && node.props) {
+        if (node.props.src) {
+            node.props.src = await resolveImageUrl(node.props.src);
+        } else {
+            node.props.src = TRANSPARENT_1X1_PNG;
+        }
+    }
+
+    if (node.props && node.props.children) {
+        if (Array.isArray(node.props.children)) {
+            await Promise.all(node.props.children.map(child => sanitizeVdom(child)));
+        } else if (typeof node.props.children === 'object') {
+            await sanitizeVdom(node.props.children);
+        }
+    }
+
+    return node;
+}
+
 // ── Función principal del worker ──────────────────────────────────────────────
 
 /**
@@ -106,6 +196,9 @@ async function loadEmoji(codepoints) {
 export default async function renderTask({ element, width, height, scale = 2, fontSet = 'default' }) {
     // Esperar a que las fuentes estén listas (solo bloquea en el primer render)
     await fontsReady;
+
+    // Sanitizar árbol VDOM asegurando que todas las imágenes sean Base64 válidas
+    await sanitizeVdom(element);
 
     // Construir array de fuentes según fontSet
     const fonts = [];

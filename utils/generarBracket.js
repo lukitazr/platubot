@@ -5,7 +5,13 @@
  */
 export default function generarBracket(equipos, tipoEncuentro = 'ida_vuelta') {
   // Shuffle aleatorio (Fisher-Yates)
-  const shuffled = [...equipos];
+  const shuffled = equipos.map(e => {
+    const plain = (e && typeof e.toObject === 'function') ? e.toObject() : e;
+    return {
+      ...plain,
+      discordId: plain.discordId || plain.propietario || plain.nombre
+    };
+  });
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -58,7 +64,7 @@ export default function generarBracket(equipos, tipoEncuentro = 'ida_vuelta') {
       llave.equipo2 = { nombre: 'BYE', discordId: 'BYE' };
       llave.ida.golesLocal = 3; llave.ida.golesVisitante = 0; llave.ida.finalizado = true;
       if (llave.vuelta) { llave.vuelta.golesLocal = 3; llave.vuelta.golesVisitante = 0; llave.vuelta.finalizado = true; }
-      llave.ganador = winner.discordId;
+      llave.ganador = winner.discordId || winner.nombre;
     }
 
     matchesR1.push(llave);
@@ -184,8 +190,8 @@ export function avanzarFase(coppa) {
 
 function getEquipoById(llave, discordId) {
   if (!discordId) return null;
-  if (llave.equipo1.discordId === discordId) return llave.equipo1;
-  if (llave.equipo2.discordId === discordId) return llave.equipo2;
+  if ((llave.equipo1.discordId || llave.equipo1.nombre) === discordId) return llave.equipo1;
+  if ((llave.equipo2.discordId || llave.equipo2.nombre) === discordId) return llave.equipo2;
   return null;
 }
 
@@ -199,15 +205,15 @@ export function determinarGanadorLlave(llave) {
   const globalEq1 = llave.ida.golesLocal + llave.vuelta.golesVisitante;
   const globalEq2 = llave.ida.golesVisitante + llave.vuelta.golesLocal;
 
-  if (globalEq1 > globalEq2) return llave.equipo1.discordId;
-  if (globalEq2 > globalEq1) return llave.equipo2.discordId;
+  if (globalEq1 > globalEq2) return llave.equipo1.discordId || llave.equipo1.nombre;
+  if (globalEq2 > globalEq1) return llave.equipo2.discordId || llave.equipo2.nombre;
 
   // Empate global → necesita desempate
   if (!llave.desempate.finalizado) return null;
 
-  if (llave.desempate.golesLocal > llave.desempate.golesVisitante) return llave.equipo1.discordId;
-  if (llave.desempate.golesVisitante > llave.desempate.golesLocal) return llave.equipo2.discordId;
+  if (llave.desempate.golesLocal > llave.desempate.golesVisitante) return llave.equipo1.discordId || llave.equipo1.nombre;
+  if (llave.desempate.golesVisitante > llave.desempate.golesLocal) return llave.equipo2.discordId || llave.equipo2.nombre;
 
   // Si el desempate también es empate (no debería pasar), equipo1 avanza
-  return llave.equipo1.discordId;
+  return llave.equipo1.discordId || llave.equipo1.nombre;
 }

@@ -1,6 +1,9 @@
 import { renderToBuffer } from './renderPool.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { resolvePlayers, getResolvedName } from '../db/userResolver.js';
+import { getOrCachePlayerAvatar } from './avatarCache.js';
+import { getAvatarBase64 } from './avatarUtils.js';
 
 // ── Background Image ────────────────────────────────────────────────────────
 function getBgImageB64() {
@@ -38,26 +41,60 @@ const THEME = {
   connectorColor: 'rgba(74, 222, 128, 0.4)',
 };
 
-// ── Fetch avatars ──────────────────────────────────────────────────────────
-async function fetchAvatars(equipos, client) {
-  const avatars = new Map();
-  if (!client) return avatars;
-  const promises = equipos.map(async (e) => {
-    if (!e.discordId || !/^\d{17,20}$/.test(e.discordId) || e.discordId === 'BYE') return;
-    try {
-      const user = await client.users.fetch(e.discordId);
-      avatars.set(e.discordId, user.displayAvatarURL({ extension: 'png', size: 256 }));
-    } catch {
-      avatars.set(e.discordId, null);
-    }
+// ── Fetch avatares y resolución relacional ──────────────────────────────────
+async function fetchPlayerMap(coppa, client) {
+  const userIds = new Set();
+  (coppa.equipos || []).forEach(e => {
+    const id = typeof e === 'string' ? e : (e.discordId || e.id || e.nombre);
+    if (id) userIds.add(String(id).trim());
   });
-  await Promise.all(promises);
-  return avatars;
+  const llavesObj = coppa.llaves || {};
+  for (const phase in llavesObj) {
+    const matches = llavesObj[phase] || [];
+    matches.forEach(m => {
+      if (m.equipo1?.discordId) userIds.add(String(m.equipo1.discordId).trim());
+      if (m.equipo1?.nombre) userIds.add(String(m.equipo1.nombre).trim());
+      if (m.equipo2?.discordId) userIds.add(String(m.equipo2.discordId).trim());
+      if (m.equipo2?.nombre) userIds.add(String(m.equipo2.nombre).trim());
+    });
+  }
+
+  const resolved = await resolvePlayers(userIds, client);
+  const avatarMap = new Map();
+
+  await Promise.all(Array.from(userIds).map(async id => {
+    const idStr = String(id).trim();
+    let base64 = await getOrCachePlayerAvatar(idStr, client, resolved).catch(() => null);
+
+    if (!base64 && resolved.has(idStr)) {
+      const rawAv = resolved.get(idStr)?.avatar;
+      if (rawAv) {
+        base64 = await getAvatarBase64(rawAv).catch(() => null);
+      }
+    }
+
+    const resObj = resolved.get(idStr) || {};
+    avatarMap.set(idStr, {
+      ...resObj,
+      avatar: base64 || null
+    });
+  }));
+
+  return avatarMap;
 }
 
 // ── Card Component ──────────────────────────────────────────────────────────
-function buildTeamRow(equipo, isWinner, isLoser, isBye, gIda, gVue, avatars, reversed = false) {
-  const avatarUrl = avatars.get(equipo.discordId);
+function buildTeamRow(equipo, isWinner, isLoser, isBye, gIda, gVue, playerMap, reversed = false) {
+  const idStr = String(equipo?.discordId || equipo?.id || equipo?.nombre || '');
+  const resolvedObj = playerMap.get(idStr) || playerMap.get(String(equipo?.nombre || '').trim());
+
+  let avatarUrl = resolvedObj?.avatar || null;
+  if (avatarUrl && !avatarUrl.startsWith('data:') && !avatarUrl.startsWith('http')) {
+    avatarUrl = null;
+  }
+
+  const nombreText = isBye ? 'BYE' : getResolvedName(idStr, playerMap, equipo?.nombre || 'TBD');
+
   const borderColor = isWinner ? THEME.winGreen : isLoser ? THEME.loseRed : 'transparent';
   const bg = isWinner ? THEME.winGreenBg : isLoser ? THEME.loseRedBg : 'transparent';
   const nameColor = isWinner ? THEME.winGreenText : isLoser ? THEME.loseRedText : '#e2e8f0';
@@ -152,23 +189,25 @@ function buildTeamRow(equipo, isWinner, isLoser, isBye, gIda, gVue, avatars, rev
   };
 }
 
-function buildMatchCard(llave, avatars, reversed = false) {
-  const { equipo1, equipo2, ida, vuelta, desempate, ganador } = llave;
+function buildMatchCard(llave, avatars, reversed = false, cardWidth = CARD_W) {
+  const { equipo1, equipo2, ida, vuelta, desempate, ganador } = llave || {};
   const done = !!ganador;
-  const isTBD = !equipo1.discordId && !equipo2.discordId;
+  const eq1 = equipo1 || { nombre: 'TBD', discordId: null };
+  const eq2 = equipo2 || { nombre: 'TBD', discordId: null };
+  const isTBD = !eq1.discordId && !eq2.discordId;
 
   return {
     type: 'div',
     props: {
       style: {
-        width: `${CARD_W}px`, background: 'rgba(2,44,22,0.82)', border: '1px solid rgba(5, 150, 105, 0.2)',
+        width: `${cardWidth}px`, background: 'rgba(2,44,22,0.82)', border: '1px solid rgba(5, 150, 105, 0.2)',
         borderRadius: '8px', overflow: 'hidden', display: 'flex', flexDirection: 'column',
         boxShadow: '0 4px 15px rgba(0,0,0,0.5)', opacity: isTBD ? 0.35 : 1
       },
       children: [
-        buildTeamRow(equipo1, ganador === equipo1.discordId, done && ganador !== equipo1.discordId, equipo1.discordId === 'BYE', ida.golesLocal, vuelta.golesVisitante, avatars, reversed),
+        buildTeamRow(eq1, ganador === eq1.discordId || (typeof ganador === 'string' && ganador.toLowerCase() === (eq1.nombre || '').toLowerCase()), done && ganador !== eq1.discordId, eq1.discordId === 'BYE' || eq1.nombre === 'BYE', ida?.golesLocal ?? null, vuelta?.golesVisitante ?? null, avatars, reversed),
         { type: 'div', props: { style: { height: '1px', background: 'rgba(5, 150, 105, 0.1)', width: '100%' } } },
-        buildTeamRow(equipo2, ganador === equipo2.discordId, done && ganador !== equipo2.discordId, equipo2.discordId === 'BYE', ida.golesVisitante, vuelta.golesLocal, avatars, reversed),
+        buildTeamRow(eq2, ganador === eq2.discordId || (typeof ganador === 'string' && ganador.toLowerCase() === (eq2.nombre || '').toLowerCase()), done && ganador !== eq2.discordId, eq2.discordId === 'BYE' || eq2.nombre === 'BYE', ida?.golesVisitante ?? null, vuelta?.golesLocal ?? null, avatars, reversed),
       ]
     }
   };
@@ -181,7 +220,7 @@ function buildConnectors(fromTops, toTops, xStart, width, direction = 'right') {
     const xEnd = xStart + width;
 
     for (let i = 0; i < toTops.length; i++) {
-        const yA = fromTops[i * 2] + CARD_H / 2;
+        const yA = fromTops[i * 2] !== undefined ? fromTops[i * 2] + CARD_H / 2 : toTops[i] + CARD_H / 2;
         const yB = fromTops[i * 2 + 1] !== undefined ? fromTops[i * 2 + 1] + CARD_H / 2 : yA;
         const yT = toTops[i] + CARD_H / 2;
         const yMid = (yA + yB) / 2;
@@ -190,21 +229,21 @@ function buildConnectors(fromTops, toTops, xStart, width, direction = 'right') {
         const lineStyle = { position: 'absolute', background: THEME.connectorColor };
 
         if (direction === 'right') {
-            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yA}px`, width: `${width/2}px`, height: '1.5px' } } });
+            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yA}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
             if (fromTops[i * 2 + 1] !== undefined) {
-                lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yB}px`, width: `${width/2}px`, height: '1.5px' } } });
+                lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yB}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
                 lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${Math.min(yA, yB)}px`, width: '1.5px', height: `${Math.abs(yB - yA)}px` } } });
             }
             lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${Math.min(yMid, yT)}px`, width: '1.5px', height: `${Math.abs(yT - yMid) + 1.5}px` } } });
-            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yT}px`, width: `${width/2}px`, height: '1.5px' } } });
+            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yT}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
         } else {
-            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yA}px`, width: `${width/2}px`, height: '1.5px' } } });
+            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yA}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
             if (fromTops[i * 2 + 1] !== undefined) {
-                lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yB}px`, width: `${width/2}px`, height: '1.5px' } } });
+                lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${yB}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
                 lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${Math.min(yA, yB)}px`, width: '1.5px', height: `${Math.abs(yB - yA)}px` } } });
             }
             lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xMid}px`, top: `${Math.min(yMid, yT)}px`, width: '1.5px', height: `${Math.abs(yT - yMid) + 1.5}px` } } });
-            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yT}px`, width: `${width/2}px`, height: '1.5px' } } });
+            lines.push({ type: 'div', props: { style: { ...lineStyle, left: `${xStart}px`, top: `${yT}px`, width: `${Math.max(1, width/2)}px`, height: '1.5px' } } });
         }
     }
     return lines;
@@ -212,17 +251,29 @@ function buildConnectors(fromTops, toTops, xStart, width, direction = 'right') {
 
 // ── Main Generator ──────────────────────────────────────────────────────────
 export async function generarBracketImagen(coppa, client) {
-  const avatars = await fetchAvatars(coppa.equipos, client);
+  const avatars = await fetchPlayerMap(coppa, client);
   const bgB64 = getBgImageB64();
 
-  const phases = coppa.fasesEliminatoria;
+  const phases = coppa.fasesEliminatoria || Object.keys(coppa.llaves || {});
   const nPhases = phases.length;
   const areaH = 460;
   const yOffset = 110;
 
+  const roundsPerWing = Math.max(1, nPhases - 1);
+  const cardW = roundsPerWing > 3 ? 136 : CARD_W;
+  const gapX = roundsPerWing > 3 ? 20 : GAP_X;
+  const padX = roundsPerWing > 3 ? 18 : PAD_X;
+  const colSpacing = cardW + gapX;
+  const totalRequiredW = padX * 2 + (roundsPerWing * 2 + 1) * colSpacing;
+  const CANVAS_W = Math.max(1280, totalRequiredW);
+  const x_Final = (CANVAS_W - cardW) / 2;
+
+  const x_L = Array.from({ length: roundsPerWing }, (_, i) => padX + i * colSpacing);
+  const x_R = Array.from({ length: roundsPerWing }, (_, i) => CANVAS_W - padX - cardW - i * colSpacing);
+
   const wingData = phases.map((phaseName, idx) => {
-    const matches = coppa.llaves[phaseName];
-    if (idx === nPhases - 1) return { label: '⚽ FINAL', center: matches[0] };
+    const matches = coppa.llaves?.[phaseName] || [];
+    if (idx === nPhases - 1) return { label: '⚽ FINAL', center: matches[0] || null };
     const mid = Math.ceil(matches.length / 2);
     return {
       label: phaseName.toUpperCase(),
@@ -232,21 +283,17 @@ export async function generarBracketImagen(coppa, client) {
   });
 
   function getTops(n, areaH) {
+    if (!n || n <= 0) return [];
     const sp = areaH / n;
     return Array.from({ length: n }, (_, i) => Math.round(i * sp + sp / 2) - CARD_H / 2);
   }
 
   const elements = [];
 
-  // Round Positions
-  const x_L = [PAD_X, PAD_X + CARD_W + GAP_X, PAD_X + 2 * (CARD_W + GAP_X)];
-  const x_R = [CANVAS_W - PAD_X - CARD_W, CANVAS_W - PAD_X - 2 * CARD_W - GAP_X, CANVAS_W - PAD_X - 3 * CARD_W - 2 * GAP_X];
-  const x_Final = (CANVAS_W - CARD_W) / 2;
-
   // Left Wing
   for (let i = 0; i < nPhases - 1; i++) {
     const matches = wingData[i].left;
-    if (!matches) continue;
+    if (!matches || !matches.length) continue;
     const x = x_L[i];
     const tops = getTops(matches.length, areaH);
 
@@ -254,7 +301,7 @@ export async function generarBracketImagen(coppa, client) {
     elements.push({
       type: 'div',
       props: {
-        style: { position: 'absolute', top: '75px', left: `${x}px`, width: `${CARD_W}px`, display: 'flex', justifyContent: 'center' },
+        style: { position: 'absolute', top: '75px', left: `${x}px`, width: `${cardW}px`, display: 'flex', justifyContent: 'center' },
         children: {
             type: 'div',
             props: {
@@ -270,23 +317,23 @@ export async function generarBracketImagen(coppa, client) {
         type: 'div',
         props: {
           style: { position: 'absolute', left: `${x}px`, top: `${yOffset + tops[idx]}px`, display: 'flex' },
-          children: [buildMatchCard(m, avatars, false)]
+          children: [buildMatchCard(m, avatars, false, cardW)]
         }
       });
     });
 
     if (i < nPhases - 1) {
-        const nextX = i === nPhases - 2 ? x_Final : x_L[i+1];
-        const nextTops = i === nPhases - 2 ? [areaH/2 - CARD_H/2] : getTops(wingData[i+1].left.length, areaH);
-        const connW = i === nPhases - 2 ? x_Final - (x + CARD_W) : GAP_X;
-        elements.push(...buildConnectors(tops, nextTops, x + CARD_W, connW, 'right').map(l => ({ ...l, props: { ...l.props, style: { ...l.props.style, top: `${parseFloat(l.props.style.top) + yOffset}px` } } })));
+        const nextX = i === nPhases - 2 ? x_Final : (x_L[i+1] ?? x_Final);
+        const nextTops = i === nPhases - 2 ? [areaH/2 - CARD_H/2] : getTops(wingData[i+1]?.left?.length || 1, areaH);
+        const connW = i === nPhases - 2 ? x_Final - (x + cardW) : gapX;
+        elements.push(...buildConnectors(tops, nextTops, x + cardW, connW, 'right').map(l => ({ ...l, props: { ...l.props, style: { ...l.props.style, top: `${parseFloat(l.props.style.top) + yOffset}px` } } })));
     }
   }
 
   // Right Wing
   for (let i = 0; i < nPhases - 1; i++) {
     const matches = wingData[i].right;
-    if (!matches) continue;
+    if (!matches || !matches.length) continue;
     const x = x_R[i];
     const tops = getTops(matches.length, areaH);
 
@@ -294,7 +341,7 @@ export async function generarBracketImagen(coppa, client) {
     elements.push({
       type: 'div',
       props: {
-        style: { position: 'absolute', top: '75px', left: `${x}px`, width: `${CARD_W}px`, display: 'flex', justifyContent: 'center' },
+        style: { position: 'absolute', top: '75px', left: `${x}px`, width: `${cardW}px`, display: 'flex', justifyContent: 'center' },
         children: {
             type: 'div',
             props: {
@@ -310,43 +357,45 @@ export async function generarBracketImagen(coppa, client) {
         type: 'div',
         props: {
           style: { position: 'absolute', left: `${x}px`, top: `${yOffset + tops[idx]}px`, display: 'flex' },
-          children: [buildMatchCard(m, avatars, true)]
+          children: [buildMatchCard(m, avatars, true, cardW)]
         }
       });
     });
 
     if (i < nPhases - 1) {
-        const nextX = i === nPhases - 2 ? x_Final : x_R[i+1];
-        const nextTops = i === nPhases - 2 ? [areaH/2 - CARD_H/2] : getTops(wingData[i+1].right.length, areaH);
-        const connW = i === nPhases - 2 ? (x) - (x_Final + CARD_W) : GAP_X;
-        const connX = i === nPhases - 2 ? x_Final + CARD_W : x - GAP_X;
+        const nextX = i === nPhases - 2 ? x_Final : (x_R[i+1] ?? x_Final);
+        const nextTops = i === nPhases - 2 ? [areaH/2 - CARD_H/2] : getTops(wingData[i+1]?.right?.length || 1, areaH);
+        const connW = i === nPhases - 2 ? (x) - (x_Final + cardW) : gapX;
+        const connX = i === nPhases - 2 ? x_Final + cardW : x - gapX;
         elements.push(...buildConnectors(tops, nextTops, connX, connW, 'left').map(l => ({ ...l, props: { ...l.props, style: { ...l.props.style, top: `${parseFloat(l.props.style.top) + yOffset}px` } } })));
     }
   }
 
   // Final
-  const finalMatch = wingData[nPhases - 1].center;
-  const topFinal = yOffset + areaH / 2 - CARD_H / 2;
-  elements.push({
-    type: 'div',
-    props: {
-      style: { position: 'absolute', top: '70px', left: `${x_Final}px`, width: `${CARD_W}px`, display: 'flex', justifyContent: 'center' },
-      children: {
-          type: 'div',
-          props: {
-              style: { fontSize: '11px', fontWeight: 900, letterSpacing: '2px', color: '#fbbf24', padding: '4px 14px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: '15px' },
-              children: '⚽ FINAL'
-          }
+  const finalMatch = wingData[nPhases - 1]?.center;
+  if (finalMatch) {
+    const topFinal = yOffset + areaH / 2 - CARD_H / 2;
+    elements.push({
+      type: 'div',
+      props: {
+        style: { position: 'absolute', top: '70px', left: `${x_Final}px`, width: `${cardW}px`, display: 'flex', justifyContent: 'center' },
+        children: {
+            type: 'div',
+            props: {
+                style: { fontSize: '11px', fontWeight: 900, letterSpacing: '2px', color: '#fbbf24', padding: '4px 14px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: '15px' },
+                children: '⚽ FINAL'
+            }
+        }
       }
-    }
-  });
-  elements.push({
-    type: 'div',
-    props: {
-      style: { position: 'absolute', left: `${x_Final}px`, top: `${topFinal}px`, display: 'flex' },
-      children: [buildMatchCard(finalMatch, avatars, false)]
-    }
-  });
+    });
+    elements.push({
+      type: 'div',
+      props: {
+        style: { position: 'absolute', left: `${x_Final}px`, top: `${topFinal}px`, display: 'flex' },
+        children: [buildMatchCard(finalMatch, avatars, false, cardW)]
+      }
+    });
+  }
 
   const root = {
     type: 'div',
@@ -372,3 +421,4 @@ export async function generarBracketImagen(coppa, client) {
 
   return renderToBuffer(root, CANVAS_W, CANVAS_H);
 }
+

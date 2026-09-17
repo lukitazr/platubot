@@ -3,40 +3,40 @@ import { existsSync, readFileSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { getFlagUrl } from './countryHelper.js';
+import { getAvatarBase64 } from './avatarUtils.js';
 
 // ── Helpers de Utilidad ──────────────────────────────────────────────────────
 
+function sanitizeHex(val, fallback = '#1a1a2e') {
+    if (!val || typeof val !== 'string') return fallback;
+    const matches = val.match(/#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}/g);
+    if (matches && matches.length > 0) return matches[0];
+    if (/^[0-9a-fA-F]{6}$/.test(val.trim())) return `#${val.trim()}`;
+    return fallback;
+}
+
 function getTheme(tema = {}) {
     return {
-        primario: tema.primario || '#1a1a2e',
-        secundario: tema.secundario || '#16213e',
-        acento: tema.acento || '#e94560',
-        texto: tema.texto || '#ffffff',
-        borde: tema.borde || '#0f3460',
+        primario: sanitizeHex(tema.primario, '#1a1a2e'),
+        secundario: sanitizeHex(tema.secundario, '#16213e'),
+        acento: sanitizeHex(tema.acento, '#e94560'),
+        texto: sanitizeHex(tema.texto, '#ffffff'),
+        borde: sanitizeHex(tema.borde, '#0f3460'),
     };
 }
 
 function hexToRgba(hex, alpha) {
     if (!hex || typeof hex !== 'string') return 'transparent';
     if (!hex.startsWith('#')) return hex;
-    
-    let r = 0, g = 0, b = 0;
-    if (hex.length === 4) {
-        r = parseInt(hex[1] + hex[1], 16);
-        g = parseInt(hex[2] + hex[2], 16);
-        b = parseInt(hex[3] + hex[3], 16);
-    } else if (hex.length === 7) {
-        r = parseInt(hex.slice(1, 3), 16);
-        g = parseInt(hex.slice(3, 5), 16);
-        b = parseInt(hex.slice(5, 7), 16);
-    } else {
-        return hex;
-    }
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-const MAX_CACHE = 200;
+// ── Cache de Avatares en Memoria (LRU simple) ────────────────────────────────
 const avatarCache = new Map();
+const MAX_CACHE = 200;
 
 function setCached(key, value) {
     if (avatarCache.size >= MAX_CACHE) {
@@ -48,15 +48,13 @@ function setCached(key, value) {
 
 export async function getSafeAvatarAsync(avatarUrl) {
     if (!avatarUrl) return null;
-    if (avatarUrl.startsWith('http') || avatarUrl.startsWith('data:')) return avatarUrl;
+    if (avatarUrl.startsWith('data:')) return avatarUrl;
     if (avatarCache.has(avatarUrl)) return avatarCache.get(avatarUrl);
     try {
-        if (existsSync(avatarUrl)) {
-            const buffer = await readFile(avatarUrl);
-            const ext = avatarUrl.split('.').pop() || 'png';
-            const data = `data:image/${ext};base64,${buffer.toString('base64')}`;
-            setCached(avatarUrl, data);
-            return data;
+        const b64 = await getAvatarBase64(avatarUrl);
+        if (b64) {
+            setCached(avatarUrl, b64);
+            return b64;
         }
     } catch (e) {}
     return null;
@@ -152,15 +150,15 @@ function avatarElement(urlOrEquipo, nombre, t, size = 28, filter = 'none') {
                   {
                       type: 'div',
                       props: {
-                          style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${hexToRgba(t.borde, 0.25)}`, overflow: 'hidden', position: 'absolute', left: 0, zIndex: 2, display: 'flex' },
-                          children: safeUrl1 ? { type: 'img', props: { src: safeUrl1, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
+                          style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${hexToRgba(t.borde, 0.25)}`, overflow: 'hidden', position: 'absolute', left: '10px', display: 'flex' },
+                          children: safeUrl2 ? { type: 'img', props: { src: safeUrl2, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
                       }
                   },
                   {
                       type: 'div',
                       props: {
-                          style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${hexToRgba(t.borde, 0.25)}`, overflow: 'hidden', position: 'absolute', left: '10px', zIndex: 1, display: 'flex' },
-                          children: safeUrl2 ? { type: 'img', props: { src: safeUrl2, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
+                          style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${hexToRgba(t.borde, 0.25)}`, overflow: 'hidden', position: 'absolute', left: 0, display: 'flex' },
+                          children: safeUrl1 ? { type: 'img', props: { src: safeUrl1, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
                       }
                   }
               ]
@@ -507,7 +505,7 @@ function buildHeaderElement(torneo, titulo, subtitulo, t) {
     }
 }
 
-function renderGroupTableComponent(gName, groupEquipos, colWidths, cols, t, torneo) {
+function renderGroupTableComponent(gName, groupEquipos, colWidths, cols, t, torneo, isMultiGroup = false, singleTableWidth = 594) {
     const rowHeight = 40;
     const rows = groupEquipos.map((e, idx) => {
         const dif = (e.gf || 0) - (e.gc || 0);
@@ -530,7 +528,16 @@ function renderGroupTableComponent(gName, groupEquipos, colWidths, cols, t, torn
     return {
         type: 'div',
         props: {
-            style: { display: 'flex', flexDirection: 'column', marginBottom: '20px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: `1px solid ${hexToRgba(t.borde, 0.3)}`, padding: '15px', width: '100%' },
+            style: { 
+                display: 'flex', 
+                flexDirection: 'column', 
+                marginBottom: isMultiGroup ? '0px' : '20px', 
+                background: 'rgba(0,0,0,0.2)', 
+                borderRadius: '12px', 
+                border: `1px solid ${hexToRgba(t.borde, 0.3)}`, 
+                padding: '15px', 
+                width: isMultiGroup ? `${singleTableWidth}px` : '100%' 
+            },
             children: [
                 {
                     type: 'div',
@@ -604,7 +611,7 @@ async function renderTablaBase(torneo, equipos, titulo, subtitulo, grupoSel = nu
         return await renderToBuffer(root, totalWidth, totalHeight);
     }
 
-    const hasGroups = torneo.gruposHabilitados && equipos.some(e => e.grupo);
+    const hasGroups = equipos.some(e => e.grupo);
 
     if (hasGroups) {
         const groups = {};
@@ -619,36 +626,32 @@ async function renderTablaBase(torneo, equipos, titulo, subtitulo, grupoSel = nu
             groups[gName].sort((a,b) => b.puntos - a.puntos || (b.gf-b.gc) - (a.gf-a.gc) || b.gf - a.gf);
         });
 
-        const useTwoCols = sortedGroupNames.length > 2;
-        const colWidths = useTwoCols 
+        const isMultiGroup = sortedGroupNames.length > 1;
+        const colWidths = isMultiGroup 
             ? [40, 180, 42, 42, 42, 42, 42, 42, 42, 50] 
             : [40, 260, 48, 48, 48, 48, 48, 48, 48, 56]; 
             
         const singleTableWidth = colWidths.reduce((s, w) => s + w, 0) + 30;
-        const totalWidth = useTwoCols ? (singleTableWidth * 2) + 60 : singleTableWidth + 40;
+        const totalWidth = isMultiGroup ? (singleTableWidth * 2) + 90 : singleTableWidth + 40;
         
         const headerHeight = torneo.logo ? 120 : 80;
         const getGroupHeight = (gEquipos) => 10 + 30 + 30 + (gEquipos.length * 40) + 20;
         
         let groupsAreaHeight = 0;
-        if (useTwoCols) {
-            let leftColHeight = 0;
-            let rightColHeight = 0;
-            sortedGroupNames.forEach((gName, idx) => {
-                const h = getGroupHeight(groups[gName]);
-                if (idx % 2 === 0) leftColHeight += h;
-                else rightColHeight += h;
-            });
-            groupsAreaHeight = Math.max(leftColHeight, rightColHeight);
+        if (isMultiGroup) {
+            for (let i = 0; i < sortedGroupNames.length; i += 2) {
+                const h1 = getGroupHeight(groups[sortedGroupNames[i]]);
+                const h2 = sortedGroupNames[i + 1] ? getGroupHeight(groups[sortedGroupNames[i + 1]]) : 0;
+                groupsAreaHeight += Math.max(h1, h2) + 30; // 30px gap
+            }
+            if (groupsAreaHeight > 0) groupsAreaHeight -= 30;
         } else {
-            sortedGroupNames.forEach(gName => {
-                groupsAreaHeight += getGroupHeight(groups[gName]);
-            });
+            groupsAreaHeight = getGroupHeight(groups[sortedGroupNames[0]]);
         }
         
         const totalHeight = headerHeight + groupsAreaHeight + 60;
         const groupElements = sortedGroupNames.map(gName => 
-            renderGroupTableComponent(gName, groups[gName], colWidths, cols, t, torneo)
+            renderGroupTableComponent(gName, groups[gName], colWidths, cols, t, torneo, isMultiGroup, singleTableWidth)
         );
         
         const root = {
@@ -664,26 +667,12 @@ async function renderTablaBase(torneo, equipos, titulo, subtitulo, grupoSel = nu
                                 display: 'flex', 
                                 flexDirection: 'row', 
                                 flexWrap: 'wrap', 
+                                justifyContent: 'center', 
                                 width: '100%', 
                                 gap: '30px',
                                 marginTop: '10px'
                             },
-                            children: useTwoCols ? [
-                                {
-                                    type: 'div',
-                                    props: {
-                                        style: { display: 'flex', flexDirection: 'column', width: '48%' },
-                                        children: groupElements.filter((_, idx) => idx % 2 === 0)
-                                    }
-                                },
-                                {
-                                    type: 'div',
-                                    props: {
-                                        style: { display: 'flex', flexDirection: 'column', width: '48%' },
-                                        children: groupElements.filter((_, idx) => idx % 2 !== 0)
-                                    }
-                                }
-                            ] : groupElements
+                            children: groupElements
                         }
                     }
                 ]

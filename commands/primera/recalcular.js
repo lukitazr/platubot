@@ -80,20 +80,32 @@ async function recalcularEstadisticas(liga) {
       visitante.gf += gv;
       visitante.gc += gl;
 
-      if (gl > gv) {
+      const isDoubleWO = p.isDoubleWO || (gl === 0 && gv === 0);
+      const isWO = p.isWO || (gl === 3 && gv === 0) || (gl === 0 && gv === 3);
+
+      if (isDoubleWO) {
+        local.pe++; // WO en la tabla
+        local.pts -= 2;
+        local.pp++;
+        visitante.pe++; // WO en la tabla
+        visitante.pts -= 2;
+        visitante.pp++;
+      } else if (gl > gv) {
         local.pg++;
         local.pts += 3;
         visitante.pp++;
+        if (isWO) {
+          visitante.pe++; // WO en la tabla
+          visitante.pts -= 2;
+        }
       } else if (gl < gv) {
         visitante.pg++;
         visitante.pts += 3;
         local.pp++;
-      } else {
-        // Empate / WO (penalizado)
-        local.pe++;
-        local.pts -= 2;
-        visitante.pe++;
-        visitante.pts -= 2;
+        if (isWO) {
+          local.pe++; // WO en la tabla
+          local.pts -= 2;
+        }
       }
     }
   }

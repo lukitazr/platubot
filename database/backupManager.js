@@ -1,135 +1,323 @@
-import { readdir, copyFile, mkdir, readFile, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { jsonModelEvents } from './JsonModel.js';
-import JsonModel from './JsonModel.js';
+import { existsSync, mkdirSync } from 'fs';
+import { readdir, readFile, writeFile, rm, stat } from 'fs/promises';
+import { join, resolve } from 'path';
+import mongoose from 'mongoose';
+import 'colors';
+import { connectDB } from './connection.js';
+import JsonModel, { jsonModelEvents } from './JsonModel.js';
 
 const execAsync = promisify(exec);
 
-// Path definitions
-const DATA_DIR = join(process.cwd(), 'data');
-const STATE_FILE = join(process.cwd(), 'backup_state.json');
-const DIRS = {
-  '30M': join(process.cwd(), 'data30M'),
-  '1D': join(process.cwd(), 'data1D'),
-  '3D': join(process.cwd(), 'data3D'),
-  '1S': join(process.cwd(), 'data1S')
-};
-
-// State
-let lastBackupTimes = {
-  last30M: 0,
-  last1D: 0,
-  last3D: 0,
-  last1S: 0
-};
-
-let isGitOperating = false;
-let gitDebounceTimeout = null;
 let clientInstance = null;
+let schedulerTimer = null;
 
-// Deep copy helper for JSON data directory
-async function copyDataDir(destDir) {
-  if (!existsSync(destDir)) {
-    await mkdir(destDir, { recursive: true });
+// Backup Configuration
+export const BACKUP_ROOT = join(process.cwd(), 'backups');
+export const STATE_FILE = join(BACKUP_ROOT, 'backup_state.json');
+
+export const BACKUP_TIERS = {
+  '30m': { name: '30m', intervalMs: 30 * 60 * 1000, maxRetention: 24, label: '30 Minutos' },
+  '1h':  { name: '1h',  intervalMs: 60 * 60 * 1000, maxRetention: 24, label: '1 Hora' },
+  '3h':  { name: '3h',  intervalMs: 3 * 60 * 60 * 1000, maxRetention: 24, label: '3 Horas' },
+  '1d':  { name: '1d',  intervalMs: 24 * 60 * 60 * 1000, maxRetention: 30, label: '1 Día' },
+  '1w':  { name: '1w',  intervalMs: 7 * 24 * 60 * 60 * 1000, maxRetention: 12, label: '1 Semana' }
+};
+
+// Ensure base backup directories exist
+export function ensureBackupDirs() {
+  if (!existsSync(BACKUP_ROOT)) {
+    mkdirSync(BACKUP_ROOT, { recursive: true });
   }
-  const files = await readdir(DATA_DIR);
-  for (const file of files) {
-    if (file.endsWith('.json') && file !== 'backup_state.json') {
-      await copyFile(join(DATA_DIR, file), join(destDir, file));
+  for (const tier of Object.keys(BACKUP_TIERS)) {
+    const tierPath = join(BACKUP_ROOT, tier);
+    if (!existsSync(tierPath)) {
+      mkdirSync(tierPath, { recursive: true });
     }
   }
-}
-
-// Write the backup state file
-async function saveBackupState() {
-  await writeFile(STATE_FILE, JSON.stringify(lastBackupTimes, null, 2), 'utf8');
-}
-
-// Git operation helper
-async function runGitBackup(message) {
-  if (isGitOperating) {
-    console.log('[Backup] Git operation in progress. Deferring...');
-    return;
+  const manualPath = join(BACKUP_ROOT, 'manual');
+  if (!existsSync(manualPath)) {
+    mkdirSync(manualPath, { recursive: true });
   }
-  isGitOperating = true;
+}
+
+// Load backup schedule state
+export async function loadBackupState() {
+  ensureBackupDirs();
+  if (!existsSync(STATE_FILE)) {
+    const initialState = { lastRun: {} };
+    await writeFile(STATE_FILE, JSON.stringify(initialState, null, 2), 'utf8');
+    return initialState;
+  }
   try {
-    console.log(`[Backup] Running Git: ${message}`.cyan);
-    await execAsync('git add backup_state.json data30M data1D data3D data1S');
-    const { stdout: statusOut } = await execAsync('git status --porcelain');
-    if (!statusOut.trim()) {
-      console.log('[Backup] No changes detected in Git repository.'.yellow);
-      isGitOperating = false;
-      return;
+    const content = await readFile(STATE_FILE, 'utf8');
+    return JSON.parse(content);
+  } catch {
+    return { lastRun: {} };
+  }
+}
+
+// Save backup schedule state
+export async function saveBackupState(state) {
+  ensureBackupDirs();
+  await writeFile(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+// Format timestamp helper: YYYY-MM-DD_HH-mm-ss
+export function formatTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  const mm = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const min = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  return `${yyyy}-${mm}-${dd}_${hh}-${min}-${ss}`;
+}
+
+// Delete oldest backups if retention limit exceeded
+export async function pruneOldBackups(tier) {
+  const config = BACKUP_TIERS[tier];
+  if (!config) return;
+
+  const tierDir = join(BACKUP_ROOT, tier);
+  if (!existsSync(tierDir)) return;
+
+  try {
+    const entries = await readdir(tierDir, { withFileTypes: true });
+    const folders = entries
+      .filter(e => e.isDirectory() && e.name.startsWith('backup_'))
+      .map(e => e.name)
+      .sort(); // Lexicographical sort works because timestamps are YYYY-MM-DD_HH-mm-ss
+
+    if (folders.length > config.maxRetention) {
+      const toDelete = folders.slice(0, folders.length - config.maxRetention);
+      for (const folder of toDelete) {
+        const fullPath = join(tierDir, folder);
+        console.log(`[Backup Retention] Eliminando backup antiguo (${tier}): ${folder}`.gray);
+        await rm(fullPath, { recursive: true, force: true });
+      }
     }
-    const { stdout: branchOut } = await execAsync('git rev-parse --abbrev-ref HEAD');
-    const currentBranch = branchOut.trim();
-    await execAsync(`git commit -m "${message}"`);
-    await execAsync(`git push origin ${currentBranch}`);
-    console.log(`[Backup] Git backup pushed successfully to ${currentBranch}!`.green);
   } catch (err) {
-    console.error('[Backup] Git push failed:'.red, err);
-  } finally {
-    isGitOperating = false;
+    console.error(`[Backup Retention] Error al purgar backups en ${tier}:`, err.message);
   }
 }
 
-// Debounced Git backup for immediate writes
-function queueDebouncedBackup() {
-  if (gitDebounceTimeout) {
-    clearTimeout(gitDebounceTimeout);
+// Core backup creation function
+export async function createBackup(tier = 'manual') {
+  ensureBackupDirs();
+  await connectDB();
+
+  const db = mongoose.connection.db;
+  if (!db) {
+    throw new Error('La conexión a MongoDB no está activa.');
   }
-  gitDebounceTimeout = setTimeout(() => {
-    runGitBackup('Backup: automatic database update from bot/web editor');
-  }, 30000); // 30 seconds debounce to bundle multiple writes
+
+  const collections = await db.listCollections().toArray();
+  const folderName = `backup_${formatTimestamp()}`;
+  const targetDir = join(BACKUP_ROOT, tier, folderName);
+
+  mkdirSync(targetDir, { recursive: true });
+
+  const manifest = {
+    tier,
+    folderName,
+    timestamp: new Date().toISOString(),
+    totalCollections: 0,
+    totalDocuments: 0,
+    totalBytes: 0,
+    collections: {}
+  };
+
+  for (const collInfo of collections) {
+    const collName = collInfo.name;
+    if (collName.startsWith('system.')) continue;
+
+    const coll = db.collection(collName);
+    const docs = await coll.find({}).toArray();
+
+    const jsonContent = JSON.stringify(docs, null, 2);
+    const filePath = join(targetDir, `${collName}.json`);
+    await writeFile(filePath, jsonContent, 'utf8');
+
+    const fileStat = await stat(filePath);
+    manifest.collections[collName] = {
+      documents: docs.length,
+      bytes: fileStat.size
+    };
+    manifest.totalCollections++;
+    manifest.totalDocuments += docs.length;
+    manifest.totalBytes += fileStat.size;
+  }
+
+  // Write manifest
+  await writeFile(join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+
+  // Prune old backups for this tier
+  if (BACKUP_TIERS[tier]) {
+    await pruneOldBackups(tier);
+  }
+
+  // Update schedule state
+  const state = await loadBackupState();
+  state.lastRun = state.lastRun || {};
+  state.lastRun[tier] = Date.now();
+  await saveBackupState(state);
+
+  console.log(`[Backup ${tier.toUpperCase()}] Respaldo completado en ${targetDir} (${manifest.totalDocuments} documentos en ${manifest.totalCollections} colecciones)`.green);
+
+  return {
+    success: true,
+    tier,
+    folderName,
+    backupPath: targetDir,
+    manifest
+  };
 }
 
-// Periodic check for 30M, 1D, 3D, and 1S folders
-async function checkPeriodicBackups() {
-  const now = Date.now();
-  let updatedAny = false;
+// Check and trigger scheduled backups across all configured tiers
+export async function checkAndRunScheduledBackups() {
+  try {
+    const state = await loadBackupState();
+    const now = Date.now();
+    let stateChanged = false;
 
-  // 30M: 30 minutes (1800000 ms)
-  if (now - lastBackupTimes.last30M >= 30 * 60 * 1000) {
-    console.log('[Backup] Updating data30M (30 min)...'.yellow);
-    await copyDataDir(DIRS['30M']);
-    lastBackupTimes.last30M = now;
-    updatedAny = true;
-  }
+    for (const [tier, config] of Object.entries(BACKUP_TIERS)) {
+      const lastRun = state.lastRun?.[tier] || 0;
+      const elapsed = now - lastRun;
 
-  // 1D: 24 hours (86400000 ms)
-  if (now - lastBackupTimes.last1D >= 24 * 60 * 60 * 1000) {
-    console.log('[Backup] Updating data1D (24h)...'.yellow);
-    await copyDataDir(DIRS['1D']);
-    lastBackupTimes.last1D = now;
-    updatedAny = true;
-  }
+      if (elapsed >= config.intervalMs) {
+        console.log(`[Backup Scheduler] Disparando backup programado: ${tier} (${config.label})`.cyan);
+        await createBackup(tier);
+        state.lastRun = state.lastRun || {};
+        state.lastRun[tier] = Date.now();
+        stateChanged = true;
+      }
+    }
 
-  // 3D: 3 days (259200000 ms)
-  if (now - lastBackupTimes.last3D >= 3 * 24 * 60 * 60 * 1000) {
-    console.log('[Backup] Updating data3D (3 days)...'.yellow);
-    await copyDataDir(DIRS['3D']);
-    lastBackupTimes.last3D = now;
-    updatedAny = true;
-  }
-
-  // 1S: 7 days (604800000 ms)
-  if (now - lastBackupTimes.last1S >= 7 * 24 * 60 * 60 * 1000) {
-    console.log('[Backup] Updating data1S (7 days)...'.yellow);
-    await copyDataDir(DIRS['1S']);
-    lastBackupTimes.last1S = now;
-    updatedAny = true;
-  }
-
-  if (updatedAny) {
-    await saveBackupState();
-    await runGitBackup('Backup: scheduled periodic folder updates (30M/1D/3D/1S)');
+    if (stateChanged) {
+      await saveBackupState(state);
+    }
+  } catch (err) {
+    console.error('[Backup Scheduler] Error durante la comprobación de backups:'.red, err.message);
   }
 }
 
-// Resolve a specific JsonModel instance by name
+// Start periodic scheduler check (every 60 seconds)
+export function startBackupScheduler() {
+  if (schedulerTimer) {
+    clearInterval(schedulerTimer);
+  }
+
+  ensureBackupDirs();
+  console.log('[Backup Scheduler] Iniciando monitor de backups locales (30m, 1h, 3h, 1d, 1w)...'.cyan);
+
+  // Initial check on boot
+  checkAndRunScheduledBackups();
+
+  // Check every 1 minute
+  schedulerTimer = setInterval(() => {
+    checkAndRunScheduledBackups();
+  }, 60 * 1000);
+
+  if (schedulerTimer.unref) {
+    schedulerTimer.unref();
+  }
+}
+
+// List all available backups
+export async function listAllBackups() {
+  ensureBackupDirs();
+  const tiers = [...Object.keys(BACKUP_TIERS), 'manual'];
+  const allBackups = [];
+
+  for (const tier of tiers) {
+    const tierDir = join(BACKUP_ROOT, tier);
+    if (!existsSync(tierDir)) continue;
+
+    try {
+      const entries = await readdir(tierDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.startsWith('backup_')) continue;
+
+        const backupPath = join(tierDir, entry.name);
+        const manifestPath = join(backupPath, 'manifest.json');
+
+        let manifest = null;
+        if (existsSync(manifestPath)) {
+          try {
+            manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+          } catch {}
+        }
+
+        allBackups.push({
+          tier,
+          folderName: entry.name,
+          fullPath: backupPath,
+          manifest,
+          createdDate: manifest?.timestamp || entry.name.replace('backup_', '').replace(/_/g, ' ')
+        });
+      }
+    } catch {}
+  }
+
+  // Sort descending by date
+  return allBackups.sort((a, b) => (b.createdDate > a.createdDate ? 1 : -1));
+}
+
+// Restore a database backup from directory
+export async function restoreBackup(backupPath) {
+  const fullPath = resolve(backupPath);
+  if (!existsSync(fullPath)) {
+    throw new Error(`La ruta de backup no existe: ${fullPath}`);
+  }
+
+  await connectDB();
+  const db = mongoose.connection.db;
+  if (!db) {
+    throw new Error('La conexión a MongoDB no está activa.');
+  }
+
+  const entries = await readdir(fullPath);
+  const jsonFiles = entries.filter(f => f.endsWith('.json') && f !== 'manifest.json');
+
+  if (jsonFiles.length === 0) {
+    throw new Error(`No se encontraron archivos de colecciones JSON en: ${fullPath}`);
+  }
+
+  const summary = {
+    backupPath: fullPath,
+    restoredCollections: 0,
+    restoredDocuments: 0,
+    details: {}
+  };
+
+  for (const file of jsonFiles) {
+    const collectionName = file.replace('.json', '');
+    const filePath = join(fullPath, file);
+    const content = await readFile(filePath, 'utf8');
+    const docs = JSON.parse(content);
+
+    const collection = db.collection(collectionName);
+    await collection.deleteMany({});
+
+    let insertedCount = 0;
+    if (Array.isArray(docs) && docs.length > 0) {
+      const result = await collection.insertMany(docs);
+      insertedCount = result.insertedCount;
+    }
+
+    summary.details[collectionName] = insertedCount;
+    summary.restoredCollections++;
+    summary.restoredDocuments += insertedCount;
+  }
+
+  console.log(`[Backup Restore] Base de datos restaurada desde ${fullPath} (${summary.restoredDocuments} documentos en ${summary.restoredCollections} colecciones)`.bold.green);
+  return summary;
+}
+
+// Resolve a specific Mongo-backed model instance by name
 async function getModel(collectionName) {
   const paths = [
     `../models/${collectionName}.js`,
@@ -222,16 +410,14 @@ function startHttpServer() {
         if (pathname === '/api/vps/logs' && req.method === 'GET') {
           let logOutput = '';
           try {
-            // Try to fetch active PM2 logs or process stdout
             const { stdout } = await execAsync('pm2 logs platubot --raw --lines 20 --nostream');
             logOutput = stdout;
           } catch (e) {
-            // Fallback: Return dynamic system trace
             logOutput = `[SYSTEM] PM2 not found or inactive. Active bot processes running on Bun.\n`;
             logOutput += `[SYSTEM] Time: ${new Date().toISOString()}\n`;
             logOutput += `[SYSTEM] Platform: ${process.platform}\n`;
             logOutput += `[SYSTEM] Uptime: ${process.uptime()}s\n`;
-            logOutput += `[DATABASE] Synced with JSON directory: ${DATA_DIR}\n`;
+            logOutput += `[DATABASE] Connected to local MongoDB database (platubot)\n`;
             logOutput += `[INFO] Bot Client ready: ${!!clientInstance}\n`;
           }
           return new Response(JSON.stringify({ logs: logOutput }), { headers: corsHeaders });
@@ -249,7 +435,6 @@ function startHttpServer() {
 
           try {
             if (command === 'restart') {
-              // Graceful delayed self-restart to allow HTTP response to be delivered first
               setTimeout(() => {
                 exec('pm2 restart platubot', (err) => {
                   if (err) {
@@ -260,7 +445,6 @@ function startHttpServer() {
               output = 'Reinicio solicitado: El bot y el servidor HTTP se reiniciarán en 1 segundo.';
               success = true;
             } else if (command === 'pull') {
-              // Pulleamos de Github
               const { stdout } = await execAsync('git pull origin main');
               output = stdout || 'Ya actualizado.';
             } else if (command === 'status') {
@@ -289,22 +473,48 @@ function startHttpServer() {
             uptime: Math.floor(process.uptime()),
             memory: process.memoryUsage(),
             platform: process.platform,
-            nodeVersion: process.version
+            nodeVersion: process.version,
+            dbConnected: mongoose.connection.readyState === 1
           };
           return new Response(JSON.stringify(stats), { headers: corsHeaders });
         }
 
+        // 2. Backups API Endpoints
+        if (pathname === '/api/backups' && req.method === 'GET') {
+          const state = await loadBackupState();
+          const backups = await listAllBackups();
+          return new Response(JSON.stringify({
+            tiers: BACKUP_TIERS,
+            state,
+            backups
+          }), { headers: corsHeaders });
+        }
 
-        // 2. Get list of all collections
+        if (pathname === '/api/backups/create' && req.method === 'POST') {
+          const body = await req.json().catch(() => ({}));
+          const tier = body.tier || 'manual';
+          const result = await createBackup(tier);
+          return new Response(JSON.stringify(result), { headers: corsHeaders });
+        }
+
+        if (pathname === '/api/backups/restore' && req.method === 'POST') {
+          const body = await req.json().catch(() => ({}));
+          if (!body.backupPath) {
+            return new Response(JSON.stringify({ error: 'Falta backupPath' }), { status: 400, headers: corsHeaders });
+          }
+          const result = await restoreBackup(body.backupPath);
+          return new Response(JSON.stringify(result), { headers: corsHeaders });
+        }
+
+        // 3. Get list of all collections from local MongoDB
         if (pathname === '/api/collections' && req.method === 'GET') {
-          const files = await readdir(DATA_DIR);
-          const collections = files
-            .filter(file => file.endsWith('.json') && file !== 'backup_state.json')
-            .map(file => file.replace('.json', ''));
+          await connectDB();
+          const collectionsRaw = await mongoose.connection.db.listCollections().toArray();
+          const collections = collectionsRaw.map(c => c.name);
           return new Response(JSON.stringify({ collections }), { headers: corsHeaders });
         }
 
-        // 3. Collection CRUD Operations
+        // 4. Collection CRUD Operations
         const collectionMatch = pathname.match(/^\/api\/collections\/([^/]+)$/);
         const docMatch = pathname.match(/^\/api\/collections\/([^/]+)\/([^/]+)$/);
 
@@ -331,8 +541,6 @@ function startHttpServer() {
           const docId = docMatch[2];
           const body = await req.json();
           const model = await getModel(collectionName);
-          
-          // Use standard JsonModel update
           const result = await model.findOneAndUpdate({ _id: docId }, { $set: body });
           return new Response(JSON.stringify(result), { headers: corsHeaders });
         }
@@ -346,7 +554,6 @@ function startHttpServer() {
           return new Response(JSON.stringify(result), { headers: corsHeaders });
         }
 
-        // Endpoint not found
         return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: corsHeaders });
 
       } catch (err) {
@@ -365,63 +572,15 @@ export async function init(client) {
 
   // Set up hook in JsonModel events
   jsonModelEvents.onWrite = (collectionName) => {
-    console.log(`[DB Change] Dynamic update detected in collection: ${collectionName}`.magenta);
-    queueDebouncedBackup();
+    console.log(`[DB Change] Dynamic update detected in MongoDB collection: ${collectionName}`.magenta);
   };
 
-  // Verify paths exist
-  if (!existsSync(DATA_DIR)) {
-    await mkdir(DATA_DIR, { recursive: true });
-  }
+  // Ensure MongoDB connection is established
+  await connectDB();
 
-  // Moment 0 check
-  if (!existsSync(STATE_FILE)) {
-    console.log('[Backup] Moment 0: Initializing all backup folders...'.yellow);
-    
-    // Copy current state
-    await copyDataDir(DIRS['30M']);
-    await copyDataDir(DIRS['1D']);
-    await copyDataDir(DIRS['3D']);
-    await copyDataDir(DIRS['1S']);
-
-    // Set initial timestamps
-    const now = Date.now();
-    lastBackupTimes = {
-      last30M: now,
-      last1D: now,
-      last3D: now,
-      last1S: now
-    };
-    await saveBackupState();
-
-    // Commit and push initial folders
-    await runGitBackup('Backup: Initial moment 0 folders creation (30M/1D/3D/1S)');
-  } else {
-    try {
-      const data = await readFile(STATE_FILE, 'utf8');
-      lastBackupTimes = JSON.parse(data);
-      if (lastBackupTimes.last30M === undefined) {
-        lastBackupTimes.last30M = 0;
-      }
-      console.log('[Backup] State successfully loaded.'.green);
-    } catch (e) {
-      console.error('[Backup] Failed to read state file, resetting state:'.red, e);
-      lastBackupTimes = {
-        last30M: Date.now(),
-        last1D: Date.now(),
-        last3D: Date.now(),
-        last1S: Date.now()
-      };
-      await saveBackupState();
-    }
-  }
-
-  // Start check timer every 15 minutes (900000 ms) to accurately support 30M backups
-  setInterval(checkPeriodicBackups, 15 * 60 * 1000);
-  
-  // Also run an immediate check just in case
-  checkPeriodicBackups();
-
-  // Start HTTP API
+  // Start HTTP API Server
   startHttpServer();
+
+  // Start multi-tier automated backup scheduler
+  startBackupScheduler();
 }

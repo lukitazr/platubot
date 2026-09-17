@@ -5,7 +5,7 @@ import { generarTablaImagen } from '../../utils/visual/tablaGenerator.js';
 export default {
   name: 'platubi-tabla',
   aliases: ['pltabla', 'tablapl', 'tablaplatubi'],
-  desc: 'Muestra la tabla de posiciones de la Platubi. Uso: !platubi-tabla [temporada]',
+  desc: 'Muestra la tabla de posiciones de la Platubi. Uso: !platubi-tabla [nombre_o_número_liga]',
   permisos: [],
 
   // Data para Slash Commands
@@ -14,7 +14,7 @@ export default {
     .setDescription('Muestra la tabla de posiciones de la Platubi')
     .addStringOption(option =>
       option.setName('temporada')
-        .setDescription('Nombre o número de la temporada')
+        .setDescription('Nombre o número de la temporada (histórica o actual)')
         .setRequired(false)),
 
   // Ejecución para Slash Commands
@@ -33,12 +33,15 @@ export default {
 
     if (temporadaArg) {
       const query = temporadaArg.toLowerCase().trim();
-      const num = parseInt(query);
+      
+      // Buscar primero por coincidencia de nombre
+      liga = ligas.find(l => (l.nombreLiga ?? '').toLowerCase().includes(query));
 
-      if (!isNaN(num) && num >= 1 && num <= ligas.length) {
-        liga = ligas[ligas.length - num];
-      } else {
-        liga = ligas.find(l => (l.nombreLiga ?? '').toLowerCase().includes(query));
+      if (!liga) {
+        const num = parseInt(query);
+        if (!isNaN(num) && num >= 1 && num <= ligas.length) {
+          liga = ligas[num - 1]; // 1 = más reciente
+        }
       }
 
       if (!liga) {
@@ -75,14 +78,15 @@ export default {
 
     if (args && args.length > 0) {
       const query = args.join(' ').toLowerCase().trim();
-      const num = parseInt(query);
 
-      if (!isNaN(num) && num >= 1 && num <= ligas.length) {
-        // 1 = más vieja, 2 = segunda más vieja, etc.
-        liga = ligas[ligas.length - num];
-      } else {
-        // Buscar por nombre (parcial, case-insensitive)
-        liga = ligas.find(l => (l.nombreLiga ?? '').toLowerCase().includes(query));
+      // Buscar por nombre de liga
+      liga = ligas.find(l => (l.nombreLiga ?? '').toLowerCase().includes(query));
+
+      if (!liga) {
+        const num = parseInt(query);
+        if (!isNaN(num) && num >= 1 && num <= ligas.length) {
+          liga = ligas[num - 1]; // 1 = más reciente
+        }
       }
 
       if (!liga) {

@@ -3,14 +3,19 @@ import JsonModel from '../database/JsonModel.js';
 const defaults = {
   nombre: '',
   id: '',
+  avatar: '',
   ligaActual: 'Sin Liga',
-  titulos: 0,
+  titulos: {
+    oficiales: [],
+    amistosos: []
+  },
   partidosGanadosHistorico: 0,
   partidosPerdidosHistorico: 0,
   woHistorico: 0,
   golesAFavorHistorico: 0,
   golesEnContraHistorico: 0,
-  historial: []
+  historial: [],
+  aliases: []
 };
 
 export default new JsonModel('Jugador', defaults);

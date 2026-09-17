@@ -1,17 +1,15 @@
-import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
 import { init as initBackup } from '../../database/backupManager.js';
+import { connectDB } from '../../database/connection.js';
 
 export default {
   name: 'clientReady',
   once: true,
   run: async (client) => {
-    const DATA_DIR = join(process.cwd(), 'data');
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true });
-      console.log(`📁 CARPETA DE DATOS (JSON) CREADA`.green);
-    } else {
-      console.log(`📁 SISTEMA DE DATOS LOCAL INICIADO`.green);
+    try {
+      await connectDB();
+      console.log(`🍃 SISTEMA DE BASE DE DATOS LOCAL MONGODB INICIADO`.green);
+    } catch (e) {
+      console.error('Error al conectar con MongoDB:'.red, e);
     }
 
     console.log(`SESIÓN INICIADA COMO ${client.user.tag}`.green);

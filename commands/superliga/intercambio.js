@@ -9,6 +9,7 @@ import {
 import EquipoSuperliga from '../../models/superliga/Equipos.js';
 import buscarEquipo from '../../utils/db/buscarEquipo.js';
 import { registrarMovimiento } from '../../utils/db/registrarMovimiento.js';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 
 export default {
   name: 'superliga-intercambio',
@@ -120,6 +121,8 @@ export default {
 
       eqOwn.jugadores.push(jugTarget);
       eqTarget.jugadores.push(jugOwn);
+      await ensureUserRegistered(jugTarget.id, client);
+      await ensureUserRegistered(jugOwn.id, client);
 
       await eqOwn.save();
       await eqTarget.save();

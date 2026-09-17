@@ -10,12 +10,16 @@
     "colors": "^1.4.0"
   },
   "dependencies": {
+    "@google/genai": "^2.15.0",
     "@resvg/resvg-js": "^2.6.2",
     "axios": "^1.15.2",
     "discord.js": "^14.26.2",
+    "dotenv": "^17.4.2",
+    "mongoose": "^9.9.1",
     "node-html-to-image": "^5.0.0",
     "piscina": "^5.1.4",
     "satori": "^0.26.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "xlsx": "^0.18.5"
   }
 }

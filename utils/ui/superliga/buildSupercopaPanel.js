@@ -62,12 +62,17 @@ export function buildSupercopaRows(copa) {
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!activa),
     new ButtonBuilder()
-      .setCustomId('btn_ssc_editar_equipos')
-      .setLabel('📝 Editar Equipos')
-      .setStyle(ButtonStyle.Secondary),
+      .setCustomId('btn_ssc_grupos')
+      .setLabel('🔀 Modificar Grupos')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!activa),
   );
 
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('btn_ssc_editar_equipos')
+      .setLabel('📝 Editar Equipos')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('btn_ssc_editar_duelos')
       .setLabel('⚔️ Editar Duelos')
@@ -78,13 +83,13 @@ export function buildSupercopaRows(copa) {
       .setLabel('⏩ Avanzar Fase')
       .setStyle(ButtonStyle.Success)
       .setDisabled(!activa),
+  );
+
+  const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_ssc_tema')
       .setLabel('🎨 Editar Tema')
       .setStyle(ButtonStyle.Secondary),
-  );
-
-  const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_ssc_borrar')
       .setLabel('🗑️ Borrar')

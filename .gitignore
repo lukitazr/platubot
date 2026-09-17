@@ -41,3 +41,9 @@ generadas/
 .agents
 .antigravitycli
 skills-lock.json
+backups/
+mongodb_data/
+data_json_backup/
+cache/
+bin/
+assets/

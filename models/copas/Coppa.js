@@ -13,12 +13,11 @@ const defaults = {
   },
   tipoEncuentro: 'ida_vuelta',
   hayTercerPuesto: false,
-  fasesEliminatoria: [], // ['Octavos', 'Cuartos', 'Semifinales', 'Final']
-  equipos: [],           // [{ nombre, discordId }]
-  llaves: {},            // { 'Octavos': [ { id, equipo1, equipo2, ida, vuelta, desempate, ganador } ] }
+  fasesEliminatoria: [],
+  equipos: [],
+  llaves: {},
   faseActual: 0,
   createdBy: null
 };
 
-// We will simulate virtuals at runtime where needed since this is JSON Model now.
 export default new JsonModel('Coppa', defaults);

@@ -6,10 +6,15 @@ import { getFlagUrl } from './countryHelper.js';
 // ── Helpers Visuales ────────────────────────────────────────────────────────
 
 function avatarElement(urlOrMiembros, nombre, t, size = 32) {
-    if (Array.isArray(urlOrMiembros) && urlOrMiembros.length === 2) {
-        const safeUrl1 = urlOrMiembros[0].avatar || getFlagUrl(urlOrMiembros[0].nombre);
-        const safeUrl2 = urlOrMiembros[1].avatar || getFlagUrl(urlOrMiembros[1].nombre);
-        
+    let miembros = Array.isArray(urlOrMiembros) ? urlOrMiembros : null;
+    let url = typeof urlOrMiembros === 'string' ? urlOrMiembros : null;
+
+    if (miembros && miembros.length >= 2) {
+        const m1 = miembros[0] || {};
+        const m2 = miembros[1] || {};
+        const safeUrl1 = typeof m1.avatar === 'string' ? m1.avatar : getFlagUrl(m1.nombre || nombre);
+        const safeUrl2 = typeof m2.avatar === 'string' ? m2.avatar : getFlagUrl(m2.nombre || nombre);
+
         return {
             type: 'div',
             props: {
@@ -18,15 +23,15 @@ function avatarElement(urlOrMiembros, nombre, t, size = 32) {
                     {
                         type: 'div',
                         props: {
-                            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${t.borde}44`, overflow: 'hidden', position: 'absolute', left: 0, zIndex: 2, display: 'flex' },
-                            children: safeUrl1 ? { type: 'img', props: { src: safeUrl1, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
+                            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${t.borde}44`, overflow: 'hidden', position: 'absolute', left: '12px', display: 'flex' },
+                            children: safeUrl2 ? { type: 'img', props: { src: safeUrl2, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size * 0.4}px` }, children: '👤' } }
                         }
                     },
                     {
                         type: 'div',
                         props: {
-                            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${t.borde}44`, overflow: 'hidden', position: 'absolute', left: '12px', zIndex: 1, display: 'flex' },
-                            children: safeUrl2 ? { type: 'img', props: { src: safeUrl2, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size*0.4}px` }, children: '👤' } }
+                            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: '#111', border: `1px solid ${t.borde}44`, overflow: 'hidden', position: 'absolute', left: 0, display: 'flex' },
+                            children: safeUrl1 ? { type: 'img', props: { src: safeUrl1, width: size, height: size, style: { objectFit: 'cover' } } } : { type: 'span', props: { style: { margin: 'auto', fontSize: `${size * 0.4}px` }, children: '👤' } }
                         }
                     }
                 ]
@@ -35,9 +40,9 @@ function avatarElement(urlOrMiembros, nombre, t, size = 32) {
     }
 
     const flagUrl = getFlagUrl(nombre);
-    const finalUrl = urlOrMiembros || flagUrl;
+    const finalUrl = url || flagUrl;
 
-    if (finalUrl) {
+    if (typeof finalUrl === 'string' && finalUrl.length > 0) {
         return {
             type: 'img',
             props: {
@@ -48,11 +53,12 @@ function avatarElement(urlOrMiembros, nombre, t, size = 32) {
             }
         };
     }
+
     const initial = (nombre || '?')[0].toUpperCase();
     return {
         type: 'div',
         props: {
-            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: t.secundario, border: `1px solid ${t.borde}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: `${t.texto}44`, fontSize: `${size * 0.4}px`, fontWeight: 700 },      
+            style: { width: `${size}px`, height: `${size}px`, borderRadius: '50%', background: t.secundario, border: `1px solid ${t.borde}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: `${t.texto}88`, fontSize: `${size * 0.4}px`, fontWeight: 700 },
             children: initial
         }
     };
@@ -70,7 +76,7 @@ function avatarElement(urlOrMiembros, nombre, t, size = 32) {
  * @param {Object} options.tema { primario, secundario, acento, texto, borde }
  */
 export async function generarFixtureImagen(options) {
-    const { titulo, subtitulo, partidos, tema } = options;
+    const { titulo, subtitulo, partidos, tema, tipoEncuentro } = options;
     
     const t = {
         primario: tema?.primario || '#1a1a2e',
@@ -87,13 +93,14 @@ export async function generarFixtureImagen(options) {
     const cols = partidos.length > 8 ? 2 : 1;
     const width = cols === 2 ? 1500 : 800;
 
-    // Calcular altura total considerando duelos individuales en cada columna
+    // Calcular altura total considerando duelos individuales y encabezados de fecha
     let col1Height = 0;
     let col2Height = 0;
     
     partidos.forEach((p, idx) => {
         const duels = p.duelosIndividuales?.length || 0;
-        const matchHeight = rowHeight + (duels * 40) + 20; // 20px de padding/gap
+        const fechaExtra = p.fechaLabel ? 32 : 0;
+        const matchHeight = rowHeight + (duels * 40) + fechaExtra + 20; // 20px de padding/gap
         if (cols === 1) {
             col1Height += matchHeight;
         } else {
@@ -114,7 +121,7 @@ export async function generarFixtureImagen(options) {
     };
 
     const rows = partidos.map((p, i) => {
-        const isIdaVuelta = p.ida || p.vuelta;
+        const isIdaVuelta = (tipoEncuentro === 'ida_vuelta' || p.tipoEncuentro === 'ida_vuelta') && Boolean(p.vuelta);
         const done = p.resultado && p.resultado !== 'Pendiente';
         
         let marcadorElement;
@@ -207,15 +214,18 @@ export async function generarFixtureImagen(options) {
         if (p.duelosIndividuales && p.duelosIndividuales.length > 0) {
             const duelMargin = cols === 2 ? '2px 30px' : '2px 80px';
             p.duelosIndividuales.forEach(d => {
-                const dDone = d.finalizado;
+                const dDone = d.finalizado || (typeof d.golesLocal === 'number' && typeof d.golesVisitante === 'number');
                 const dRes = dDone ? `${d.golesLocal}-${d.golesVisitante}` : 'VS';
+                const lName = d.localJugadorNombre || d.localNombre || d.local || 'Jugador Local';
+                const vName = d.visitanteJugadorNombre || d.visitanteNombre || d.visitante || 'Jugador Visitante';
+
                 duelElements.push({
                     type: 'div',
                     props: {
                         style: { 
                             display: 'flex', alignItems: 'center', justifyContent: 'center', 
-                            height: '36px', background: 'rgba(0,0,0,0.15)', margin: duelMargin, 
-                            borderRadius: '6px', border: `1px dashed ${t.borde}33` 
+                            height: '36px', background: 'rgba(0,0,0,0.2)', margin: duelMargin, 
+                            borderRadius: '6px', border: `1px dashed ${t.borde}44` 
                         },
                         children: [
                             // Local Jugador
@@ -224,8 +234,9 @@ export async function generarFixtureImagen(options) {
                                 props: {
                                     style: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, justifyContent: 'flex-end', paddingRight: '15px' },
                                     children: [
-                                        { type: 'div', props: { style: { fontSize: '12px', fontWeight: 600, color: dDone && d.golesLocal > d.golesVisitante ? t.acento : `${t.texto}cc` }, children: d.localJugadorNombre } }
-                                    ]
+                                        { type: 'div', props: { style: { fontSize: '12px', fontWeight: 700, color: dDone && d.golesLocal > d.golesVisitante ? t.acento : `${t.texto}cc` }, children: lName } },
+                                        avatarElement(d.avatarLocal, lName, t, 22)
+                                    ].filter(Boolean)
                                 }
                             },
                             // Score Cajita
@@ -234,8 +245,8 @@ export async function generarFixtureImagen(options) {
                                 props: {
                                     style: { 
                                         display: 'flex', alignItems: 'center', justifyContent: 'center', 
-                                        width: '60px', height: '24px', background: 'rgba(0,0,0,0.4)', 
-                                        borderRadius: '4px', border: `1px solid ${dDone ? t.acento : t.borde}aa` 
+                                        width: '60px', height: '24px', background: 'rgba(0,0,0,0.5)', 
+                                        borderRadius: '4px', border: `1px solid ${dDone ? t.acento : `${t.borde}aa`}` 
                                     },
                                     children: [
                                         { type: 'div', props: { style: { fontSize: '11px', fontWeight: 800, color: dDone ? t.texto : `${t.texto}44` }, children: dRes } }
@@ -248,8 +259,9 @@ export async function generarFixtureImagen(options) {
                                 props: {
                                     style: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, justifyContent: 'flex-start', paddingLeft: '15px' },
                                     children: [
-                                        { type: 'div', props: { style: { fontSize: '12px', fontWeight: 600, color: dDone && d.golesVisitante > d.golesLocal ? t.acento : `${t.texto}cc` }, children: d.visitanteJugadorNombre } }
-                                    ]
+                                        avatarElement(d.avatarVisitante, vName, t, 22),
+                                        { type: 'div', props: { style: { fontSize: '12px', fontWeight: 700, color: dDone && d.golesVisitante > d.golesLocal ? t.acento : `${t.texto}cc` }, children: vName } }
+                                    ].filter(Boolean)
                                 }
                             }
                         ]
@@ -258,11 +270,55 @@ export async function generarFixtureImagen(options) {
             });
         }
 
+        const fechaBadge = p.fechaLabel ? {
+            type: 'div',
+            props: {
+                style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: `linear-gradient(90deg, ${t.acento}33 0%, rgba(0,0,0,0.4) 100%)`,
+                    borderLeft: `4px solid ${t.acento}`,
+                    padding: '4px 14px',
+                    borderRadius: '4px',
+                    marginBottom: '4px',
+                    width: '100%'
+                },
+                children: [
+                    {
+                        type: 'span',
+                        props: {
+                            style: {
+                                fontSize: '12px',
+                                fontWeight: 900,
+                                color: t.acento,
+                                letterSpacing: '2px',
+                                textTransform: 'uppercase'
+                            },
+                            children: p.fechaLabel
+                        }
+                    },
+                    p.grupo ? {
+                        type: 'span',
+                        props: {
+                            style: {
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                color: `${t.texto}88`,
+                                textTransform: 'uppercase'
+                            },
+                            children: `Grupo ${p.grupo}`
+                        }
+                    } : null
+                ].filter(Boolean)
+            }
+        } : null;
+
         return {
             type: 'div',
             props: {
                 style: { display: 'flex', flexDirection: 'column', gap: '4px', borderBottom: `1px solid ${t.borde}22`, paddingBottom: '10px', marginBottom: '10px' },
-                children: [matchRow, ...duelElements]
+                children: [fechaBadge, matchRow, ...duelElements].filter(Boolean)
             }
         };
     });
@@ -281,9 +337,9 @@ export async function generarFixtureImagen(options) {
                     props: {
                         style: { display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '40px', paddingBottom: '30px', position: 'relative' },
                         children: [
-                            { type: 'div', props: { style: { fontSize: '32px', fontWeight: 900, color: t.texto, letterSpacing: '4px', textTransform: 'uppercase' }, children: titulo } },
+                            { type: 'div', props: { style: { fontSize: '32px', fontWeight: 900, color: t.texto, letterSpacing: '4px', textTransform: 'uppercase' }, children: titulo || 'FIXTURE' } },
                             subtitulo ? { type: 'div', props: { style: { fontSize: '14px', fontWeight: 700, color: t.primario, background: t.acento, padding: '4px 20px', borderRadius: '20px', letterSpacing: '3px', textTransform: 'uppercase', marginTop: '10px' }, children: subtitulo } } : null
-                        ]
+                        ].filter(Boolean)
                     }
                 },
                 {

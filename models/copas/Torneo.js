@@ -1,17 +1,14 @@
 import JsonModel from '../../database/JsonModel.js';
 
-const defaults = {
+const baseDefaults = {
   nombre: '',
   prefix: '',
   estado: 'Configuracion', // 'Configuracion', 'Inscripcion', 'EnCurso', 'Finalizado'
   tipoJugadores: 'users',
   tipoCompeticion: 'individual', // 'individual', 'duo', 'equipos'
+  caracter: 'amistoso', // 'oficial' | 'amistoso'
   logo: null,
-  inscripcionAbierta: true,
-  equipoConfig: {
-    minJugadores: 2,
-    maxJugadores: 5,
-  },
+
   historialResultados: [],
   canalResultados: null,
 
@@ -51,10 +48,106 @@ const defaults = {
   enfrentamientosGrupos: [],
   llaves: {},
   faseActual: 0,
+  alineacionesAutomaticas: true, // true = auto-fill duels with random players, false = empty slots for manual lineup
   createdBy: null
 };
 
-const torneoModel = new JsonModel('Torneo', defaults);
+const discriminators = {
+  tipoCompeticion: {
+    individual: {
+      _excludeFields: ['equipoConfig']
+    },
+    duo: {
+      equipoConfig: {
+        minJugadores: 2,
+        maxJugadores: 2
+      }
+    },
+    equipos: {
+      equipoConfig: {
+        minJugadores: 2,
+        maxJugadores: 5
+      }
+    }
+  },
+
+  formatoPreset: {
+    directa: {
+      _excludeFields: [
+        'championsConfig',
+        'gruposHabilitados',
+        'cantidadGrupos',
+        'jugadoresPorGrupo',
+        'clasificadosPorGrupo',
+        'mejorTercero',
+        'cantMejoresTerceros',
+        'sorteoGrupos',
+        'criteriosClasificacion',
+        'enfrentamientosGrupos'
+      ]
+    },
+    eliminacion_directa: {
+      _excludeFields: [
+        'championsConfig',
+        'gruposHabilitados',
+        'cantidadGrupos',
+        'jugadoresPorGrupo',
+        'clasificadosPorGrupo',
+        'mejorTercero',
+        'cantMejoresTerceros',
+        'sorteoGrupos',
+        'criteriosClasificacion',
+        'enfrentamientosGrupos'
+      ]
+    },
+    champions: {
+      _excludeFields: [
+        'gruposHabilitados',
+        'cantidadGrupos',
+        'jugadoresPorGrupo',
+        'clasificadosPorGrupo',
+        'mejorTercero',
+        'cantMejoresTerceros',
+        'sorteoGrupos',
+        'criteriosClasificacion',
+        'enfrentamientosGrupos'
+      ],
+      championsConfig: {
+        directos: 0,
+        playoff: 0,
+        eliminados: 0,
+        bracketSize: 0
+      }
+    },
+    euro: {
+      _excludeFields: ['championsConfig'],
+      gruposHabilitados: true,
+      mejorTercero: true
+    },
+    liga: {
+      _excludeFields: [
+        'championsConfig',
+        'gruposHabilitados',
+        'cantidadGrupos',
+        'jugadoresPorGrupo',
+        'clasificadosPorGrupo',
+        'mejorTercero',
+        'cantMejoresTerceros',
+        'sorteoGrupos',
+        'criteriosClasificacion'
+      ],
+      playoffsHabilitados: false
+    },
+    personalizado: {
+      _excludeFields: ['championsConfig']
+    }
+  }
+};
+
+const torneoModel = new JsonModel('Torneo', baseDefaults, {
+  discriminatorKey: ['tipoCompeticion', 'formatoPreset'],
+  discriminators
+});
 
 // Invalidate cache on any tournament update
 const originalUpdate = torneoModel.updateDocument;

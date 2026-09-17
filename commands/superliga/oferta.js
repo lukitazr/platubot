@@ -11,6 +11,7 @@ import {
 import EquipoSuperliga from '../../models/superliga/Equipos.js';
 import { registrarMovimiento } from '../../utils/db/registrarMovimiento.js';
 import { parseCurrency } from '../../utils/db/currencyHelper.js';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 
 export default {
   name: 'superliga-oferta',
@@ -217,6 +218,7 @@ export default {
               
               jugData.contrato = 1;
               comp.jugadores.push(jugData);
+              await ensureUserRegistered(jugData.id, client);
 
               await comp.save();
               await vend.save();
@@ -306,6 +308,7 @@ export default {
               
               jugData.contrato = 1;
               comp.jugadores.push(jugData);
+              await ensureUserRegistered(jugData.id, client);
 
               await comp.save();
               await vend.save();

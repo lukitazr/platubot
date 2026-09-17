@@ -13,14 +13,26 @@ export function buildFixtureNavigation(prefix, current, total, labels = []) {
 
     // Fila 1: Select Menu para saltar a una fecha específica
     if (labels.length > 0) {
+        let optionsToDisplay = labels.map((label, idx) => ({
+            label: label.slice(0, 100),
+            value: `${idx}`,
+            default: idx === current
+        }));
+
+        if (optionsToDisplay.length > 25) {
+            let start = Math.max(0, current - 12);
+            let end = start + 25;
+            if (end > optionsToDisplay.length) {
+                end = optionsToDisplay.length;
+                start = Math.max(0, end - 25);
+            }
+            optionsToDisplay = optionsToDisplay.slice(start, end);
+        }
+
         const select = new StringSelectMenuBuilder()
             .setCustomId(`${prefix}_fix_select`)
             .setPlaceholder('Seleccionar fecha/fase...')
-            .addOptions(labels.map((label, idx) => ({
-                label: label.slice(0, 100),
-                value: `${idx}`,
-                default: idx === current
-            })));
+            .addOptions(optionsToDisplay);
         rows.push(new ActionRowBuilder().addComponents(select));
     }
 

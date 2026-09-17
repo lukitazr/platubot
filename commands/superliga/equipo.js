@@ -15,6 +15,7 @@ import path from 'path';
 import { generarImagenPlantilla, generarImagenStatsTemporada, generarImagenEconomia, generarImagenHistorial, generarImagenTraspasos } from '../../utils/visual/equipoInfoGenerator.js';
 import { generarCarta } from '../../utils/visual/cardGenerator.js';
 import fs from 'fs';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 
 // Helper para formatear moneda (k para miles, M para millones)
 const formatCurrency = (num) => {
@@ -73,6 +74,7 @@ export default {
       if (yaEsta) return message.reply(`❌ El jugador ya está en el equipo **${equipo.nombre}**.`);
 
       const targetUser = message.mentions.users.first() || await client.users.fetch(userMention.id).catch(() => null);
+      await ensureUserRegistered(targetUser || userMention.id, client);
       
       const nuevoJugador = {
         nombre: targetUser?.username || 'Desconocido',

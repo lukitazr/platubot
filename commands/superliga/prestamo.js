@@ -7,6 +7,7 @@ import {
 } from 'discord.js';
 import EquipoSuperliga from '../../models/superliga/Equipos.js';
 import { registrarMovimiento } from '../../utils/db/registrarMovimiento.js';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 
 export default {
   name: 'superliga-prestamo',
@@ -91,6 +92,7 @@ export default {
       };
 
       rec.jugadores.push(jugData);
+      await ensureUserRegistered(jugData.id, client);
 
       await rec.save();
       await due.save();

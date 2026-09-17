@@ -3,6 +3,7 @@ import Superliga from '../../models/superliga/Superliga.js';
 import EquipoSuperliga from '../../models/superliga/Equipos.js';
 import JugadorLibre from '../../models/superliga/JugadoresLibres.js';
 import { registrarMovimiento } from '../../utils/db/registrarMovimiento.js';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 import {
   generarPaginaCampeonYTabla,
   generarPaginaMovimientos,
@@ -252,6 +253,7 @@ export default {
                   delete devuelto.prestadoDe;
                   devuelto.contrato = jugadorData.prestadoDe.contratoOriginal || 1;
                   original.jugadores.push(devuelto);
+                  await ensureUserRegistered(devuelto.id, client);
                   
                   // Alta en el club original
                   pushMovimiento(original, {

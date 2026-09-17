@@ -9,6 +9,7 @@ import EquipoSuperliga from '../../models/superliga/Equipos.js';
 import JugadorLibre from '../../models/superliga/JugadoresLibres.js';
 import { registrarMovimiento } from '../../utils/db/registrarMovimiento.js';
 import { calcularValorJugador } from '../../utils/db/mediaCalculator.js';
+import { ensureUserRegistered } from '../../utils/db/userResolver.js';
 
 export default {
   name: 'superliga-contratar',
@@ -129,6 +130,7 @@ export default {
       comp.dinero -= monto;
       jugData.contrato = 1; // Contrato por defecto
       comp.jugadores.push(jugData);
+      await ensureUserRegistered(jugData.id, client);
       await comp.save();
 
       await registrarMovimiento(comp._id?.$oid ?? comp._id, {

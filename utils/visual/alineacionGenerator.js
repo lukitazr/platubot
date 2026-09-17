@@ -149,3 +149,163 @@ export async function generarAlineacion({
 
     return renderToBuffer(element, CANVAS.width, CANVAS.height);
 }
+
+/**
+ * Genera una imagen tipo tabla/fixture con los enfrentamientos individuales (sin goles).
+ * Se usa cuando hay más de 3 duelos.
+ *
+ * @param {Object} params
+ * @param {string} params.titulo - Título del match (ej: "Alfa vs Beta")
+ * @param {string} params.subtitulo - Subtítulo (ej: "Torneo de Equipos - Fecha 1")
+ * @param {Array<{localNombre: string, visitanteNombre: string, localAvatar?: string, visitanteAvatar?: string}>} params.duelos
+ * @param {Object} params.tema - { primario, secundario, acento, texto, borde }
+ * @returns {Promise<Buffer>} PNG buffer
+ */
+export async function generarAlineacionTabla({
+    titulo = 'Alineación',
+    subtitulo = '',
+    duelos = [],
+    tema = {},
+}) {
+    const t = {
+        primario: tema.primario || '#1a1a2e',
+        secundario: tema.secundario || '#16213e',
+        acento: tema.acento || '#e94560',
+        texto: tema.texto || '#ffffff',
+        borde: tema.borde || '#0f3460',
+    };
+
+    const ROW_H = 70;
+    const HEADER_H = 120;
+    const WIDTH = 800;
+    const totalHeight = HEADER_H + duelos.length * ROW_H + 40;
+
+    const avatarEl = (src, nombre) => {
+        if (src) {
+            return {
+                type: 'img',
+                props: {
+                    src,
+                    width: 40,
+                    height: 40,
+                    style: { borderRadius: '50%', objectFit: 'cover', border: `2px solid ${t.borde}66`, background: t.secundario }
+                }
+            };
+        }
+        const initial = (nombre || '?')[0].toUpperCase();
+        return {
+            type: 'div',
+            props: {
+                style: { width: '40px', height: '40px', borderRadius: '50%', background: t.secundario, border: `2px solid ${t.borde}66`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: `${t.texto}88`, fontSize: '16px', fontWeight: 700 },
+                children: initial
+            }
+        };
+    };
+
+    const rows = duelos.map((d, idx) => ({
+        type: 'div',
+        props: {
+            style: {
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                height: `${ROW_H}px`, width: '100%',
+                background: idx % 2 === 0 ? `${t.secundario}88` : `${t.primario}88`,
+                borderBottom: `1px solid ${t.borde}33`,
+                padding: '0 20px',
+            },
+            children: [
+                // Duelo number
+                {
+                    type: 'div',
+                    props: {
+                        style: { width: '50px', fontSize: '13px', fontWeight: 700, color: t.acento, textAlign: 'center' },
+                        children: `#${idx + 1}`
+                    }
+                },
+                // Local side
+                {
+                    type: 'div',
+                    props: {
+                        style: { display: 'flex', alignItems: 'center', gap: '12px', flex: 1, justifyContent: 'flex-end', paddingRight: '16px' },
+                        children: [
+                            {
+                                type: 'div',
+                                props: {
+                                    style: { fontSize: '16px', fontWeight: 700, color: t.texto, textAlign: 'right' },
+                                    children: d.localNombre || '⏳ Pendiente'
+                                }
+                            },
+                            avatarEl(d.localAvatar, d.localNombre)
+                        ]
+                    }
+                },
+                // VS badge
+                {
+                    type: 'div',
+                    props: {
+                        style: {
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            width: '60px', height: '36px',
+                            background: `${t.secundario}cc`, border: `1px solid ${t.borde}`,
+                            borderRadius: '4px'
+                        },
+                        children: { type: 'div', props: { style: { fontSize: '14px', fontWeight: 900, color: t.acento }, children: 'VS' } }
+                    }
+                },
+                // Visitante side
+                {
+                    type: 'div',
+                    props: {
+                        style: { display: 'flex', alignItems: 'center', gap: '12px', flex: 1, justifyContent: 'flex-start', paddingLeft: '16px' },
+                        children: [
+                            avatarEl(d.visitanteAvatar, d.visitanteNombre),
+                            {
+                                type: 'div',
+                                props: {
+                                    style: { fontSize: '16px', fontWeight: 700, color: t.texto },
+                                    children: d.visitanteNombre || '⏳ Pendiente'
+                                }
+                            }
+                        ]
+                    }
+                },
+            ]
+        }
+    }));
+
+    const element = {
+        type: 'div',
+        props: {
+            style: {
+                position: 'relative',
+                width: `${WIDTH}px`,
+                height: `${totalHeight}px`,
+                display: 'flex',
+                flexDirection: 'column',
+                fontFamily: 'Inter',
+                background: `linear-gradient(180deg, ${t.secundario} 0%, ${t.primario} 100%)`,
+            },
+            children: [
+                // Header
+                {
+                    type: 'div',
+                    props: {
+                        style: {
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                            height: `${HEADER_H}px`, width: '100%',
+                            borderBottom: `2px solid ${t.acento}`,
+                            padding: '10px 0',
+                        },
+                        children: [
+                            { type: 'div', props: { style: { fontSize: '26px', fontWeight: 900, color: t.texto, letterSpacing: '1px' }, children: titulo } },
+                            subtitulo ? { type: 'div', props: { style: { fontSize: '14px', fontWeight: 500, color: `${t.texto}99`, marginTop: '6px' }, children: subtitulo } } : null
+                        ].filter(Boolean)
+                    }
+                },
+                // Rows
+                ...rows
+            ]
+        }
+    };
+
+    return renderToBuffer(element, WIDTH, totalHeight);
+}

@@ -1,17 +1,25 @@
 import { renderToBuffer } from './renderPool.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import axios from 'axios';
+import { resolvePlayers } from '../db/userResolver.js';
+import Jugador from '../../models/Jugador.js';
+import { getOrCachePlayerAvatar } from './avatarCache.js';
 
 // ── Calcular tabla de posiciones ───────────────────────────────────────────
 
-export function calcularTabla(liga) {
+export function calcularTabla(liga, playerMap = null) {
   const mapa = new Map();
 
   // Inicializar jugadores
-  for (const j of liga.jugadores) {
-    mapa.set(j.id, {
-      nombre: j.nombre,
-      id: j.id,
+  for (const j of (liga.jugadores || [])) {
+    const idStr = String(typeof j === 'string' ? j : (j.id || j.discordId));
+    const pResolved = playerMap?.get(idStr);
+    const nombre = pResolved?.nombre || (typeof j === 'object' ? j.nombre : `Jugador (${idStr.slice(-4)})`);
+
+    mapa.set(idStr, {
+      nombre,
+      id: idStr,
       pj: 0, pg: 0, pe: 0, pp: 0,
       gf: 0, gc: 0, dg: 0, pts: 0,
     });
@@ -22,32 +30,44 @@ export function calcularTabla(liga) {
     if (!Array.isArray(fecha?.partidos)) continue;
     for (const p of fecha.partidos) {
       if (!p.finalizado) continue;
-      const local = mapa.get(p.localId);
-      const visitante = mapa.get(p.visitanteId);
+      const local = mapa.get(String(p.localId || p.local));
+      const visitante = mapa.get(String(p.visitanteId || p.visitante));
       if (!local || !visitante) continue;
 
-      local.pj++; visitante.pj++;
-      local.gf += p.golesLocal; local.gc += p.golesVisitante;
-      visitante.gf += p.golesVisitante; visitante.gc += p.golesLocal;
+      const gl = p.golesLocal;
+      const gv = p.golesVisitante;
 
-      if (p.golesLocal > p.golesVisitante) {
+      local.pj++; visitante.pj++;
+      local.gf += gl; local.gc += gv;
+      visitante.gf += gv; visitante.gc += gl;
+
+      const isDoubleWO = p.isDoubleWO || (gl === 0 && gv === 0);
+      const isWO = p.isWO || (gl === 3 && gv === 0) || (gl === 0 && gv === 3);
+
+      if (isDoubleWO) {
+        local.pe++; local.pts -= 2; local.pp++;
+        visitante.pe++; visitante.pts -= 2; visitante.pp++;
+      } else if (gl > gv) {
         local.pg++; local.pts += 3;
         visitante.pp++;
-      } else if (p.golesLocal < p.golesVisitante) {
+        if (isWO) {
+          visitante.pe++; visitante.pts -= 2;
+        }
+      } else if (gl < gv) {
         visitante.pg++; visitante.pts += 3;
         local.pp++;
-      } else {
-        local.pe++; local.pts -= 2;
-        visitante.pe++; visitante.pts -= 2;
+        if (isWO) {
+          local.pe++; local.pts -= 2;
+        }
       }
     }
   }
 
   // Calcular diferencia de gol y ordenar
-  const jugMap = new Map(liga.jugadores.map(j => [j.id, j]));
+  const jugMap = new Map((liga.jugadores || []).map(j => [String(typeof j === 'string' ? j : (j.id || j.discordId)), j]));
   const tabla = [...mapa.values()].map(j => {
     const jugDb = jugMap.get(j.id);
-    if (jugDb && (jugDb.pg !== undefined || jugDb.puntos !== undefined)) {
+    if (jugDb && typeof jugDb === 'object' && (jugDb.pg !== undefined || jugDb.puntos !== undefined)) {
       const pg = jugDb.pg ?? j.pg;
       const pe = jugDb.pe ?? j.pe;
       const pp = jugDb.pp ?? j.pp;
@@ -69,20 +89,11 @@ export function calcularTabla(liga) {
 
 // ── Fetch avatares ─────────────────────────────────────────────────────────
 
-async function fetchAvatars(tabla, client) {
+async function fetchAvatars(tabla, playerMap, client) {
   const avatars = new Map();
   const promises = tabla.map(async (j) => {
-    if (!client || !/^\d{17,20}$/.test(j.id)) {
-      avatars.set(j.id, null);
-      return;
-    }
-    try {
-      const user = await client.users.fetch(j.id);
-      const url = user.displayAvatarURL({ extension: 'png', size: 256 });
-      avatars.set(j.id, url);
-    } catch {
-      avatars.set(j.id, null);
-    }
+    const base64Avatar = await getOrCachePlayerAvatar(j.id, client, playerMap);
+    avatars.set(j.id, base64Avatar);
   });
   await Promise.all(promises);
   return avatars;
@@ -103,7 +114,7 @@ function avatarElement(url, nombre) {
   // Placeholder: círculo con la inicial
   const initial = (nombre || '?')[0].toUpperCase();
   const colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#e91e63'];
-  const bg = colors[initial.charCodeAt(0) % colors.length];
+  const colorIndex = (nombre || '?').charCodeAt(0) % colors.length;
   return {
     type: 'div',
     props: {
@@ -111,7 +122,7 @@ function avatarElement(url, nombre) {
         width: '28px',
         height: '28px',
         borderRadius: '50%',
-        background: bg,
+        background: colors[colorIndex],
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -146,8 +157,10 @@ const THEMES = {
 // ── Generar imagen de la tabla ─────────────────────────────────────────────
 
 export async function generarTablaImagen(liga, client, div = 'primera') {
-  const tabla = calcularTabla(liga);
-  const avatars = await fetchAvatars(tabla, client);
+  const userIds = (liga.jugadores || []).map(j => typeof j === 'string' ? j : (j.id || j.discordId)).filter(Boolean);
+  const playerMap = await resolvePlayers(userIds, client);
+  const tabla = calcularTabla(liga, playerMap);
+  const avatars = await fetchAvatars(tabla, playerMap, client);
   const theme = THEMES[div] ?? THEMES.primera;
 
   const cols = ['', 'Jugador', 'PJ', 'PG', 'WO', 'PP', 'GF', 'GC', 'DG', 'PTS'];
